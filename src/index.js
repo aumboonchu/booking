@@ -74,10 +74,12 @@ async function setup(request, env) {
   const branchPassword = requiredPassword(body.branchPassword, "รหัสผ่านเริ่มต้นสาขา");
   const adminName = cleanText(body.adminName, 100) || "ผู้ดูแลระบบ";
 
+  const adminCredential = await hashPassword(adminPassword);
+  const branchCredential = await hashPassword(branchPassword);
   const statements = [];
-  statements.push(await userInsertStatement(env, "ADMIN", adminName, "ADMIN", null, adminPassword));
+  statements.push(userInsertStatement(env, "ADMIN", adminName, "ADMIN", null, adminCredential));
   const branches = await env.DB.prepare("SELECT id, name FROM branches WHERE active = 1").all();
-  for (const branch of branches.results) statements.push(await userInsertStatement(env, `BR${branch.id}`, branch.name, "BRANCH", branch.id, branchPassword));
+  for (const branch of branches.results) statements.push(userInsertStatement(env, `BR${branch.id}`, branch.name, "BRANCH", branch.id, branchCredential));
   await env.DB.batch(statements);
   const admin = await env.DB.prepare("SELECT id, username, display_name, role, branch_id FROM users WHERE username = 'ADMIN'").first();
   return createLoginResponse(request, env, admin);
@@ -338,9 +340,8 @@ function partInput(value) {
   return { id, name, sellPrice, status };
 }
 
-async function userInsertStatement(env, username, displayName, role, branchId, password) {
-  const { salt, hash } = await hashPassword(password);
-  return env.DB.prepare("INSERT INTO users (id, username, display_name, role, branch_id, password_salt, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), username, displayName, role, branchId, salt, hash);
+function userInsertStatement(env, username, displayName, role, branchId, credential) {
+  return env.DB.prepare("INSERT INTO users (id, username, display_name, role, branch_id, password_salt, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), username, displayName, role, branchId, credential.salt, credential.hash);
 }
 
 async function createLoginResponse(request, env, user) {
