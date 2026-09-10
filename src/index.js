@@ -68,7 +68,8 @@ async function setup(request, env) {
   const { count } = await env.DB.prepare("SELECT COUNT(*) AS count FROM users").first();
   if (Number(count) > 0) throw new AppError(409, "ระบบถูกตั้งค่าแล้ว");
   const body = await bodyJson(request);
-  if (!env.BOOTSTRAP_TOKEN || !timingSafeEqual(new TextEncoder().encode(String(body.setupToken || "")), new TextEncoder().encode(env.BOOTSTRAP_TOKEN))) throw new AppError(403, "รหัสตั้งค่าระบบไม่ถูกต้อง");
+  if (!env.BOOTSTRAP_TOKEN) throw new AppError(503, "ระบบยังไม่ได้กำหนดรหัสตั้งค่าระบบ");
+  if (!timingSafeEqual(new TextEncoder().encode(String(body.setupToken || "")), new TextEncoder().encode(env.BOOTSTRAP_TOKEN))) throw new AppError(403, "รหัสตั้งค่าระบบไม่ถูกต้อง");
   const adminPassword = requiredPassword(body.adminPassword, "รหัสผ่านผู้ดูแล");
   const branchPassword = requiredPassword(body.branchPassword, "รหัสผ่านเริ่มต้นสาขา");
   const adminName = cleanText(body.adminName, 100) || "ผู้ดูแลระบบ";
@@ -357,7 +358,7 @@ async function audit(env, user, action, entityType, entityId, detail) {
 function publicUser(user) { return { id: user.id, username: user.username, displayName: user.display_name, role: user.role, branchId: user.branch_id, branchName: user.branch_name }; }
 function requireAdmin(user) { if (user.role !== "ADMIN") throw new AppError(403, "เฉพาะผู้ดูแลระบบเท่านั้น"); }
 function requireBranch(user) { if (user.role !== "BRANCH") throw new AppError(403, "เฉพาะบัญชีสาขาเท่านั้น"); }
-function requiredPassword(value, label) { const password = String(value || ""); if (password.length < 12) throw new AppError(400, `${label}ต้องมีอย่างน้อย 12 ตัวอักษร`); return password; }
+function requiredPassword(value, label) { const password = String(value || ""); if (password.length < 4) throw new AppError(400, `${label}ต้องมีอย่างน้อย 4 ตัวอักษร`); return password; }
 function cleanText(value, max) { return typeof value === "string" || typeof value === "number" ? String(value).trim().slice(0, max) : ""; }
 async function bodyJson(request) { const length = Number(request.headers.get("content-length") || 0); if (length > 1_000_000) throw new AppError(413, "ข้อมูลมีขนาดใหญ่เกินไป"); try { return await request.json(); } catch { throw new AppError(400, "รูปแบบข้อมูลไม่ถูกต้อง"); } }
 function json(data, status = 200, headers = {}) { return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...headers } }); }
