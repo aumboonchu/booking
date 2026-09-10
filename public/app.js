@@ -20,13 +20,8 @@ function showMessage(message, isError = false) { const target = document.querySe
 
 function authShell(content) { return `<div class="auth"><aside class="brand-panel"><div><div class="brand">JIB<small>PRE-ORDER PORTAL</small></div></div><p class="brand-note">ระบบจองสินค้าสำหรับสาขา ติดตามสถานะได้ด้วยบัญชีของสาขา และจัดการสินค้า รอบจอง และการจัดสรรจากส่วนกลาง</p></aside><section class="auth-body">${content}</section></div>`; }
 
-function renderSetup() {
-  app.innerHTML = authShell(`<section class="card"><h1>ตั้งค่าระบบครั้งแรก</h1><p class="muted">กำหนดรหัสผ่านผู้ดูแลและรหัสผ่านเริ่มต้นสำหรับบัญชีสาขาทั้ง 22 สาขา</p><div data-flash></div><form class="form" id="setup-form"><label class="field">รหัสตั้งค่าระบบ<input name="setupToken" type="password" required autocomplete="one-time-code" /></label><label class="field">ชื่อผู้ดูแล<input name="adminName" required maxlength="100" value="ผู้ดูแลระบบ" /></label><label class="field">รหัสผ่านผู้ดูแล (อย่างน้อย 4 ตัวอักษร)<input name="adminPassword" type="password" minlength="4" required autocomplete="new-password" /></label><label class="field">รหัสผ่านเริ่มต้นสาขา (อย่างน้อย 4 ตัวอักษร)<input name="branchPassword" type="password" minlength="4" required autocomplete="new-password" /></label><button class="btn btn-primary" type="submit">ตั้งค่าระบบและเข้าสู่หลังบ้าน</button></form><p class="setup-help">บัญชีสาขาจะเป็น <b>BR284, BR286, …</b> ตามรหัสสาขาในไฟล์ Branch.xlsx ควรเปลี่ยนรหัสผ่านของสาขาหลังเริ่มใช้งานจริง</p></section>`);
-  document.querySelector("#setup-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { const result = await api("/api/setup", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) }); state.user = result.user; state.page = "dashboard"; await renderApp(); } catch (error) { showMessage(error.message, true); } });
-}
-
 function renderLogin() {
-  app.innerHTML = authShell(`<section class="card"><h1>เข้าสู่ระบบจองสินค้า</h1><p class="muted">ใช้บัญชีที่ส่วนกลางกำหนดให้สำหรับสาขาของคุณ</p><div data-flash></div><form class="form" id="login-form"><label class="field">ชื่อผู้ใช้งาน<input name="username" required autocomplete="username" placeholder="BR284 หรือ ADMIN" /></label><label class="field">รหัสผ่าน<input name="password" type="password" required autocomplete="current-password" /></label><button class="btn btn-primary" type="submit">เข้าสู่ระบบ</button></form></section>`);
+  app.innerHTML = authShell(`<section class="card"><h1>เข้าสู่ระบบจองสินค้า</h1><p class="muted">ใช้บัญชีที่ส่วนกลางกำหนดให้สำหรับสาขาของคุณ</p><div data-flash></div><form class="form" id="login-form"><label class="field">ชื่อผู้ใช้งาน<input name="username" required autocomplete="username" placeholder="um หรือ BR284" /></label><label class="field">รหัสผ่าน<input name="password" type="password" required autocomplete="current-password" /></label><button class="btn btn-primary" type="submit">เข้าสู่ระบบ</button></form></section>`);
   document.querySelector("#login-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { const result = await api("/api/login", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) }); state.user = result.user; state.page = state.user.role === "ADMIN" ? "dashboard" : "catalog"; await renderApp(); } catch (error) { showMessage(error.message, true); } });
 }
 
@@ -38,11 +33,17 @@ function shell(content) {
 
 async function renderApp() {
   if (!state.user) return boot();
+  if (state.user.mustChangePassword) return renderChangePassword();
   const pages = { dashboard: renderDashboard, parts: renderParts, rounds: renderRounds, "admin-orders": renderAdminOrders, import: renderImport, catalog: renderCatalog, orders: renderOrders };
   const renderer = pages[state.page] || (state.user.role === "ADMIN" ? renderDashboard : renderCatalog);
   await renderer();
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", async () => { state.page = button.dataset.page; await renderApp(); }));
   document.querySelector("#logout")?.addEventListener("click", async () => { await api("/api/logout", { method: "POST" }); state.user = null; state.cart.clear(); await boot(); });
+}
+
+function renderChangePassword() {
+  app.innerHTML = shell(`<section class="card"><h1>เปลี่ยนรหัสผ่านครั้งแรก</h1><p class="muted">เพื่อความปลอดภัย กรุณาตั้งรหัสผ่านใหม่ก่อนใช้งานระบบ</p><div data-flash></div><form class="form" id="change-password-form"><label class="field">รหัสผ่านใหม่ (อย่างน้อย 4 ตัวอักษร)<input name="password" type="password" minlength="4" required autocomplete="new-password" /></label><label class="field">ยืนยันรหัสผ่านใหม่<input name="confirmPassword" type="password" minlength="4" required autocomplete="new-password" /></label><button class="btn btn-primary" type="submit">บันทึกรหัสผ่านใหม่</button></form></section>`);
+  document.querySelector("#change-password-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = Object.fromEntries(new FormData(event.currentTarget)); if (form.password !== form.confirmPassword) return showMessage("ยืนยันรหัสผ่านไม่ตรงกัน", true); try { const result = await api("/api/change-password", { method: "POST", body: JSON.stringify({ password: form.password }) }); state.user = result.user; state.page = state.user.role === "ADMIN" ? "dashboard" : "catalog"; await renderApp(); } catch (error) { showMessage(error.message, true); } });
 }
 
 async function renderDashboard() {
@@ -130,6 +131,6 @@ async function allocationDialog(orderId) {
 function toLocalInput(value) { return value ? new Date(value).toISOString().slice(0, 16) : ""; }
 
 async function boot() {
-  try { const status = await api("/api/setup-status"); if (!status.ready) return renderSetup(); const { user } = await api("/api/me"); state.user = user; state.page = user.role === "ADMIN" ? "dashboard" : "catalog"; await renderApp(); } catch (error) { if (error.message.includes("เข้าสู่ระบบ") || error.message.includes("เซสชัน")) return renderLogin(); app.innerHTML = authShell(`<section class="card"><h1>ไม่สามารถเริ่มระบบได้</h1>${flash(error.message, true)}</section>`); } }
+  try { const { user } = await api("/api/me"); state.user = user; state.page = user.role === "ADMIN" ? "dashboard" : "catalog"; await renderApp(); } catch (error) { if (error.message.includes("เข้าสู่ระบบ") || error.message.includes("เซสชัน")) return renderLogin(); app.innerHTML = authShell(`<section class="card"><h1>ไม่สามารถเริ่มระบบได้</h1>${flash(error.message, true)}</section>`); } }
 
 boot();

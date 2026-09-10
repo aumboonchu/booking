@@ -24,16 +24,18 @@ export default {
 async function route(request, env, url) {
   const { pathname } = url;
   if (pathname === "/api/health") return json({ ok: true });
+  await ensureDefaultUsers(env);
   if (pathname === "/api/setup-status" && request.method === "GET") {
     const { count } = await env.DB.prepare("SELECT COUNT(*) AS count FROM users").first();
     return json({ ready: Number(count) > 0 });
   }
-  if (pathname === "/api/setup" && request.method === "POST") return setup(request, env);
   if (pathname === "/api/login" && request.method === "POST") return login(request, env);
   if (pathname === "/api/logout" && request.method === "POST") return logout(request, env);
 
   const user = await currentUser(request, env);
   if (pathname === "/api/me" && request.method === "GET") return json({ user: publicUser(user) });
+  if (pathname === "/api/change-password" && request.method === "POST") return changePassword(request, env, user);
+  if (user.must_change_password) throw new AppError(403, "กรุณาเปลี่ยนรหัสผ่านก่อนใช้งานระบบ");
   if (pathname === "/api/catalog" && request.method === "GET") return catalog(env);
   if (pathname === "/api/orders" && request.method === "GET") return listOrders(env, user);
   if (pathname === "/api/orders" && request.method === "POST") return createOrder(request, env, user);
@@ -64,25 +66,17 @@ async function route(request, env, url) {
   throw new AppError(404, "ไม่พบปลายทางที่ร้องขอ");
 }
 
-async function setup(request, env) {
+async function ensureDefaultUsers(env) {
   const { count } = await env.DB.prepare("SELECT COUNT(*) AS count FROM users").first();
-  if (Number(count) > 0) throw new AppError(409, "ระบบถูกตั้งค่าแล้ว");
-  const body = await bodyJson(request);
-  if (!env.BOOTSTRAP_TOKEN) throw new AppError(503, "ระบบยังไม่ได้กำหนดรหัสตั้งค่าระบบ");
-  if (!timingSafeEqual(new TextEncoder().encode(String(body.setupToken || "")), new TextEncoder().encode(env.BOOTSTRAP_TOKEN))) throw new AppError(403, "รหัสตั้งค่าระบบไม่ถูกต้อง");
-  const adminPassword = requiredPassword(body.adminPassword, "รหัสผ่านผู้ดูแล");
-  const branchPassword = requiredPassword(body.branchPassword, "รหัสผ่านเริ่มต้นสาขา");
-  const adminName = cleanText(body.adminName, 100) || "ผู้ดูแลระบบ";
-
-  const adminCredential = await hashPassword(adminPassword);
-  const branchCredential = await hashPassword(branchPassword);
+  if (Number(count) > 0) return;
+  const initialPassword = requiredPassword(env.INITIAL_PASSWORD, "รหัสผ่านเริ่มต้นระบบ");
+  const credential = await hashPassword(initialPassword);
   const statements = [];
-  statements.push(userInsertStatement(env, "ADMIN", adminName, "ADMIN", null, adminCredential));
+  statements.push(userInsertStatement(env, "UM", "um", "ADMIN", null, credential, true));
   const branches = await env.DB.prepare("SELECT id, name FROM branches WHERE active = 1").all();
-  for (const branch of branches.results) statements.push(userInsertStatement(env, `BR${branch.id}`, branch.name, "BRANCH", branch.id, branchCredential));
+  if (!branches.results.length) throw new AppError(503, "ยังไม่พบข้อมูลสาขาในระบบ");
+  for (const branch of branches.results) statements.push(userInsertStatement(env, `BR${branch.id}`, branch.name, "BRANCH", branch.id, credential, true));
   await env.DB.batch(statements);
-  const admin = await env.DB.prepare("SELECT id, username, display_name, role, branch_id FROM users WHERE username = 'ADMIN'").first();
-  return createLoginResponse(request, env, admin);
 }
 
 async function login(request, env) {
@@ -95,6 +89,15 @@ async function login(request, env) {
   return createLoginResponse(request, env, user);
 }
 
+async function changePassword(request, env, user) {
+  const body = await bodyJson(request);
+  const password = requiredPassword(body.password, "รหัสผ่านใหม่");
+  const credential = await hashPassword(password);
+  await env.DB.prepare("UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0 WHERE id = ?").bind(credential.salt, credential.hash, user.id).run();
+  await audit(env, user, "CHANGE_PASSWORD", "USER", user.id, null);
+  return json({ user: publicUser({ ...user, must_change_password: 0 }) });
+}
+
 async function logout(request, env) {
   const token = cookie(request, "jib_session");
   if (token) await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run();
@@ -104,7 +107,7 @@ async function logout(request, env) {
 async function currentUser(request, env) {
   const token = cookie(request, "jib_session");
   if (!token) throw new AppError(401, "กรุณาเข้าสู่ระบบ");
-  const user = await env.DB.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.branch_id, b.name AS branch_name
+  const user = await env.DB.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.branch_id, u.must_change_password, b.name AS branch_name
     FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN branches b ON b.id = u.branch_id
     WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1`).bind(await sha256(token)).first();
   if (!user) throw new AppError(401, "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
@@ -340,8 +343,8 @@ function partInput(value) {
   return { id, name, sellPrice, status };
 }
 
-function userInsertStatement(env, username, displayName, role, branchId, credential) {
-  return env.DB.prepare("INSERT INTO users (id, username, display_name, role, branch_id, password_salt, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), username, displayName, role, branchId, credential.salt, credential.hash);
+function userInsertStatement(env, username, displayName, role, branchId, credential, mustChangePassword = false) {
+  return env.DB.prepare("INSERT INTO users (id, username, display_name, role, branch_id, password_salt, password_hash, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), username, displayName, role, branchId, credential.salt, credential.hash, mustChangePassword ? 1 : 0);
 }
 
 async function createLoginResponse(request, env, user) {
@@ -356,7 +359,7 @@ async function audit(env, user, action, entityType, entityId, detail) {
   await env.DB.prepare("INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, detail) VALUES (?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), user?.id || null, action, entityType, entityId, detail ? JSON.stringify(detail) : null).run();
 }
 
-function publicUser(user) { return { id: user.id, username: user.username, displayName: user.display_name, role: user.role, branchId: user.branch_id, branchName: user.branch_name }; }
+function publicUser(user) { return { id: user.id, username: user.username, displayName: user.display_name, role: user.role, branchId: user.branch_id, branchName: user.branch_name, mustChangePassword: Boolean(user.must_change_password) }; }
 function requireAdmin(user) { if (user.role !== "ADMIN") throw new AppError(403, "เฉพาะผู้ดูแลระบบเท่านั้น"); }
 function requireBranch(user) { if (user.role !== "BRANCH") throw new AppError(403, "เฉพาะบัญชีสาขาเท่านั้น"); }
 function requiredPassword(value, label) { const password = String(value || ""); if (password.length < 4) throw new AppError(400, `${label}ต้องมีอย่างน้อย 4 ตัวอักษร`); return password; }
@@ -368,7 +371,7 @@ function sessionCookie(token, secure) { return `jib_session=${token}; Path=/; Ht
 function expireCookie() { return "jib_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"; }
 function corsHeaders(request) { const origin = request.headers.get("origin"); return origin && origin === new URL(request.url).origin ? { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", "access-control-allow-headers": "content-type", "access-control-allow-methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS", vary: "origin" } : {}; }
 function withCors(response, request) { const headers = new Headers(response.headers); for (const [key, value] of Object.entries(corsHeaders(request))) headers.set(key, value); return new Response(response.body, { status: response.status, headers }); }
-async function hashPassword(password, suppliedSalt) { const salt = suppliedSalt || randomBase64(16); const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]); const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: fromBase64(salt), iterations: 210000 }, key, 256); return { salt, hash: toBase64(new Uint8Array(bits)) }; }
+async function hashPassword(password, suppliedSalt) { const salt = suppliedSalt || randomBase64(16); const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]); const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: fromBase64(salt), iterations: 100000 }, key, 256); return { salt, hash: toBase64(new Uint8Array(bits)) }; }
 async function verifyPassword(password, salt, hash) { const candidate = await hashPassword(password, salt); return timingSafeEqual(fromBase64(candidate.hash), fromBase64(hash)); }
 async function sha256(value) { return toBase64(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))); }
 function randomBase64(bytes) { const value = new Uint8Array(bytes); crypto.getRandomValues(value); return toBase64(value); }
