@@ -1,0 +1,17 @@
+{
+  "name": "jib-preorder-portal",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply jib-preorder --local",
+    "db:remote": "wrangler d1 migrations apply jib-preorder --remote",
+    "check": "wrangler types && tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "wrangler": "^4.130.0"
+  }
+}
