@@ -40,6 +40,12 @@ async function route(request, env, url) {
   if (pathname === "/api/orders" && request.method === "GET") return listOrders(env, user);
   if (pathname === "/api/orders" && request.method === "POST") return createOrder(request, env, user);
 
+  if (pathname === "/api/branches" && request.method === "GET") return listBranches(env, user);
+  if (pathname === "/api/branches" && request.method === "POST") return createBranch(request, env, user);
+  const branchMatch = pathname.match(/^\/api\/branches\/([^/]+)$/);
+  if (branchMatch && request.method === "PATCH") return updateBranch(request, env, user, decodeURIComponent(branchMatch[1]));
+  if (branchMatch && request.method === "DELETE") return removeBranch(env, user, decodeURIComponent(branchMatch[1]));
+
   if (pathname === "/api/parts" && request.method === "GET") return listParts(env, user);
   if (pathname === "/api/parts" && request.method === "POST") return createPart(request, env, user);
   if (pathname === "/api/parts/import" && request.method === "POST") return importParts(request, env, user);
@@ -112,6 +118,53 @@ async function currentUser(request, env) {
     WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1`).bind(await sha256(token)).first();
   if (!user) throw new AppError(401, "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
   return user;
+}
+
+async function listBranches(env, user) {
+  requireAdmin(user);
+  const { results } = await env.DB.prepare("SELECT b.id, b.name, u.username FROM branches b LEFT JOIN users u ON u.branch_id = b.id WHERE b.active = 1 ORDER BY b.id").all();
+  return json({ branches: results });
+}
+
+async function createBranch(request, env, user) {
+  requireAdmin(user);
+  const input = branchInput(await bodyJson(request));
+  const exists = await env.DB.prepare("SELECT id FROM branches WHERE id = ?").bind(input.id).first();
+  if (exists) throw new AppError(409, "มีรหัสสาขานี้แล้ว");
+  const credential = await hashPassword(requiredPassword(env.INITIAL_PASSWORD, "รหัสผ่านเริ่มต้นระบบ"));
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO branches (id, name, active) VALUES (?, ?, 1)").bind(input.id, input.name),
+    userInsertStatement(env, `BR${input.id}`, input.name, "BRANCH", input.id, credential, true),
+  ]);
+  await audit(env, user, "CREATE", "BRANCH", String(input.id), input);
+  return json({ branch: { ...input, username: `BR${input.id}` } }, 201);
+}
+
+async function updateBranch(request, env, user, branchId) {
+  requireAdmin(user);
+  const id = Number(branchId);
+  const current = await env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND active = 1").bind(id).first();
+  if (!current) throw new AppError(404, "ไม่พบสาขา");
+  const input = branchInput({ id, name: (await bodyJson(request)).name });
+  await env.DB.batch([
+    env.DB.prepare("UPDATE branches SET name = ? WHERE id = ?").bind(input.name, id),
+    env.DB.prepare("UPDATE users SET display_name = ? WHERE branch_id = ?").bind(input.name, id),
+  ]);
+  await audit(env, user, "UPDATE", "BRANCH", String(id), input);
+  return json({ branch: { ...input, username: `BR${id}` } });
+}
+
+async function removeBranch(env, user, branchId) {
+  requireAdmin(user);
+  const id = Number(branchId);
+  const branch = await env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND active = 1").bind(id).first();
+  if (!branch) throw new AppError(404, "ไม่พบสาขา");
+  await env.DB.batch([
+    env.DB.prepare("UPDATE branches SET active = 0 WHERE id = ?").bind(id),
+    env.DB.prepare("UPDATE users SET active = 0 WHERE branch_id = ?").bind(id),
+  ]);
+  await audit(env, user, "REMOVE", "BRANCH", String(id), { id, name: branch.name });
+  return json({ removed: true });
 }
 
 async function listParts(env, user) {
@@ -341,6 +394,12 @@ function partInput(value) {
   const status = ["OPEN", "PAUSED", "INACTIVE"].includes(value.status) ? value.status : "OPEN";
   if (!id || !name || !Number.isInteger(sellPrice) || sellPrice < 0) throw new AppError(400, "ข้อมูล Part ไม่ถูกต้อง");
   return { id, name, sellPrice, status };
+}
+
+function branchInput(value) {
+  const id = Number(value.id); const name = cleanText(value.name, 200);
+  if (!Number.isSafeInteger(id) || id < 1 || id > 99999 || !name) throw new AppError(400, "ข้อมูลสาขาไม่ถูกต้อง");
+  return { id, name };
 }
 
 function userInsertStatement(env, username, displayName, role, branchId, credential, mustChangePassword = false) {

@@ -27,14 +27,14 @@ function renderLogin() {
 
 function shell(content) {
   const isAdmin = state.user.role === "ADMIN";
-  const nav = isAdmin ? [["dashboard", "ภาพรวม"], ["parts", "จัดการ Part"], ["rounds", "รอบจอง"], ["admin-orders", "ใบจองและจัดสรร"], ["import", "นำเข้า Excel"]] : [["catalog", "เลือกสินค้า"], ["orders", "รายการจองของฉัน"]];
+  const nav = isAdmin ? [["dashboard", "ภาพรวม"], ["branches", "ข้อมูลสาขา"], ["parts", "จัดการ Part"], ["rounds", "รอบจอง"], ["admin-orders", "ใบจองและจัดสรร"], ["import", "นำเข้า Excel"]] : [["catalog", "เลือกสินค้า"], ["orders", "รายการจองของฉัน"]];
   return `<div class="shell"><aside class="sidebar"><div class="brand">JIB<small>PRE-ORDER PORTAL</small></div><nav class="nav">${nav.map(([id, label]) => `<button class="${state.page === id ? "active" : ""}" data-page="${id}">${label}</button>`).join("")}</nav><div class="sidebar-foot">${isAdmin ? "ผู้ดูแลระบบส่วนกลาง" : `สาขา ${state.user.branchId}<br>${escapeHtml(state.user.branchName)}`}</div></aside><main class="main"><div class="topbar"><span class="context">${isAdmin ? "WORKSPACE / ส่วนกลาง" : `สาขา ${state.user.branchId} / ${escapeHtml(state.user.branchName)}`}</span><button class="btn btn-outline btn-small" id="logout">ออกจากระบบ</button></div><div data-flash></div>${content}</main></div>`;
 }
 
 async function renderApp() {
   if (!state.user) return boot();
   if (state.user.mustChangePassword) return renderChangePassword();
-  const pages = { dashboard: renderDashboard, parts: renderParts, rounds: renderRounds, "admin-orders": renderAdminOrders, import: renderImport, catalog: renderCatalog, orders: renderOrders };
+  const pages = { dashboard: renderDashboard, branches: renderBranches, parts: renderParts, rounds: renderRounds, "admin-orders": renderAdminOrders, import: renderImport, catalog: renderCatalog, orders: renderOrders };
   const renderer = pages[state.page] || (state.user.role === "ADMIN" ? renderDashboard : renderCatalog);
   await renderer();
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", async () => { state.page = button.dataset.page; await renderApp(); }));
@@ -49,6 +49,21 @@ function renderChangePassword() {
 async function renderDashboard() {
   const summary = await api("/api/admin/summary");
   app.innerHTML = shell(`<section class="page-header"><div><h1>ภาพรวมการจอง</h1><p>ติดตามงานที่ต้องดำเนินการจากส่วนกลาง</p></div><button class="btn btn-primary" data-page="admin-orders">ดูใบจองที่รอพิจารณา</button></section><section class="grid grid-3"><article class="stat"><label>ใบจองทั้งหมด</label><strong>${summary.totalOrders}</strong></article><article class="stat"><label>รอพิจารณา</label><strong>${summary.pendingOrders}</strong></article><article class="stat"><label>จัดสรรแล้ว</label><strong>${summary.allocatedOrders}</strong></article></section><section class="panel" style="margin-top:18px"><h2>การมีส่วนร่วมของสาขา</h2><p class="muted">มีสาขาส่งคำขอแล้ว ${summary.participatingBranches} จาก 22 สาขา</p><button class="btn btn-primary" data-page="rounds">จัดการรอบจอง</button></section>`);
+}
+
+async function renderBranches() {
+  const { branches } = await api("/api/branches");
+  app.innerHTML = shell(`<section class="page-header"><div><h1>ข้อมูลสาขา</h1><p>เพิ่ม แก้ไข หรือลบสาขาที่ใช้ระบบจองสินค้า</p></div><button class="btn btn-primary" id="add-branch">+ เพิ่มสาขา</button></section><section class="table-wrap"><table class="table"><thead><tr><th>รหัสสาขา</th><th>ชื่อสาขา</th><th>บัญชีเข้าสู่ระบบ</th><th></th></tr></thead><tbody>${branches.length ? branches.map((branch) => `<tr><td><b>${branch.id}</b></td><td>${escapeHtml(branch.name)}</td><td>${escapeHtml(branch.username || `BR${branch.id}`)}</td><td><button class="btn btn-outline btn-small" data-edit-branch="${branch.id}">แก้ไข</button></td></tr>`).join("") : `<tr><td colspan="4" class="empty">ยังไม่มีสาขา</td></tr>`}</tbody></table></section>`);
+  document.querySelector("#add-branch").onclick = () => branchDialog();
+  document.querySelectorAll("[data-edit-branch]").forEach((button) => button.onclick = () => branchDialog(branches.find((branch) => String(branch.id) === button.dataset.editBranch)));
+}
+
+function branchDialog(branch) {
+  const existing = Boolean(branch); const modal = document.createElement("div"); modal.className = "dialog-backdrop";
+  modal.innerHTML = `<form class="dialog form" id="branch-form"><h2>${existing ? "แก้ไขสาขา" : "เพิ่มสาขา"}</h2><label class="field">รหัสสาขา *<input name="id" type="number" min="1" max="99999" ${existing ? "readonly" : ""} value="${branch?.id || ""}" required /></label><label class="field">ชื่อสาขา *<input name="name" maxlength="200" value="${escapeHtml(branch?.name || "")}" required /></label>${existing ? "" : `<p class="muted">ระบบจะสร้างบัญชี BR&lt;รหัสสาขา&gt; พร้อมรหัสเริ่มต้นของระบบ และบังคับเปลี่ยนรหัสผ่านเมื่อเข้าใช้ครั้งแรก</p>`}<div class="dialog-footer">${existing ? `<button class="btn btn-danger" type="button" id="remove-branch">ลบสาขา</button>` : ""}<button class="btn btn-outline" type="button" data-close>ยกเลิก</button><button class="btn btn-primary" type="submit">บันทึก</button></div></form>`;
+  document.body.append(modal); modal.querySelector("[data-close]").onclick = () => modal.remove();
+  modal.querySelector("#branch-form").addEventListener("submit", async (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); data.id = Number(data.id); try { await api(existing ? `/api/branches/${branch.id}` : "/api/branches", { method: existing ? "PATCH" : "POST", body: JSON.stringify(data) }); modal.remove(); await renderBranches(); } catch (error) { showMessage(error.message, true); } });
+  modal.querySelector("#remove-branch")?.addEventListener("click", async () => { if (!confirm(`ยืนยันลบสาขา ${branch.name}? บัญชีสาขาจะไม่สามารถเข้าสู่ระบบได้`)) return; try { await api(`/api/branches/${branch.id}`, { method: "DELETE" }); modal.remove(); await renderBranches(); showMessage("ลบสาขาแล้ว"); } catch (error) { showMessage(error.message, true); } });
 }
 
 async function renderParts() {
