@@ -68,6 +68,7 @@ async function setup(request, env) {
   const { count } = await env.DB.prepare("SELECT COUNT(*) AS count FROM users").first();
   if (Number(count) > 0) throw new AppError(409, "ระบบถูกตั้งค่าแล้ว");
   const body = await bodyJson(request);
+  if (!env.BOOTSTRAP_TOKEN || !timingSafeEqual(new TextEncoder().encode(String(body.setupToken || "")), new TextEncoder().encode(env.BOOTSTRAP_TOKEN))) throw new AppError(403, "รหัสตั้งค่าระบบไม่ถูกต้อง");
   const adminPassword = requiredPassword(body.adminPassword, "รหัสผ่านผู้ดูแล");
   const branchPassword = requiredPassword(body.branchPassword, "รหัสผ่านเริ่มต้นสาขา");
   const adminName = cleanText(body.adminName, 100) || "ผู้ดูแลระบบ";
