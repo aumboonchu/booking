@@ -81,7 +81,7 @@ async function ensureDefaultUsers(env) {
   statements.push(userInsertStatement(env, "UM", "um", "ADMIN", null, credential, true));
   const branches = await env.DB.prepare("SELECT id, name FROM branches WHERE active = 1").all();
   if (!branches.results.length) throw new AppError(503, "ยังไม่พบข้อมูลสาขาในระบบ");
-  for (const branch of branches.results) statements.push(userInsertStatement(env, `BR${branch.id}`, branch.name, "BRANCH", branch.id, credential, true));
+  for (const branch of branches.results) statements.push(userInsertStatement(env, `JIB${branch.id}`, branch.name, "BRANCH", branch.id, credential, true));
   await env.DB.batch(statements);
 }
 
@@ -134,10 +134,10 @@ async function createBranch(request, env, user) {
   const credential = await hashPassword(requiredPassword(env.INITIAL_PASSWORD, "รหัสผ่านเริ่มต้นระบบ"));
   await env.DB.batch([
     env.DB.prepare("INSERT INTO branches (id, name, active) VALUES (?, ?, 1)").bind(input.id, input.name),
-    userInsertStatement(env, `BR${input.id}`, input.name, "BRANCH", input.id, credential, true),
+    userInsertStatement(env, `JIB${input.id}`, input.name, "BRANCH", input.id, credential, true),
   ]);
   await audit(env, user, "CREATE", "BRANCH", String(input.id), input);
-  return json({ branch: { ...input, username: `BR${input.id}` } }, 201);
+  return json({ branch: { ...input, username: `JIB${input.id}` } }, 201);
 }
 
 async function updateBranch(request, env, user, branchId) {
@@ -151,7 +151,7 @@ async function updateBranch(request, env, user, branchId) {
     env.DB.prepare("UPDATE users SET display_name = ? WHERE branch_id = ?").bind(input.name, id),
   ]);
   await audit(env, user, "UPDATE", "BRANCH", String(id), input);
-  return json({ branch: { ...input, username: `BR${id}` } });
+  return json({ branch: { ...input, username: `JIB${id}` } });
 }
 
 async function removeBranch(env, user, branchId) {
