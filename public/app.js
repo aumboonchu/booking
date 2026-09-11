@@ -128,30 +128,33 @@ async function editOrderDialog(orderId) {
 }
 
 async function renderAdminOrders() {
-  const { orders } = await api("/api/admin/orders");
+  const { rows: reportRows } = await api("/api/admin/orders/export");
   let page = 1; const pageSize = 20;
-  app.innerHTML = shell(`<section class="page-header report-header"><div><h1>รายงานความต้องการและการจัดสรร</h1><p>ดูรายการทั้งหมด เรียงตามวันเวลาที่แจ้ง และส่งออกข้อมูล</p></div><button class="btn btn-excel" id="export-orders"><span aria-hidden="true">▦</span> Export Excel</button></section><section class="toolbar report-toolbar"><label class="field report-search">ค้นหา<input id="admin-order-search" placeholder="ลูกค้า สาขา รุ่น หรือเลขที่รายการ" /></label><label class="field">วันที่เริ่มต้น<input id="admin-order-start" type="date" /></label><label class="field">วันที่สิ้นสุด<input id="admin-order-end" type="date" /></label><label class="field compact">สถานะ<select id="admin-order-status"><option value="">ทั้งหมด</option><option value="PENDING">รอจัดสรร</option><option value="PARTIAL">จัดสรรบางส่วน</option><option value="ALLOCATED">จัดสรรครบ</option><option value="SENT">ส่งสินค้าแล้ว</option><option value="CANCELLED">ยกเลิก</option></select></label><label class="field compact">เรียงตาม<select id="admin-order-sort"><option value="desc">ใหม่สุดก่อน</option><option value="asc">เก่าสุดก่อน</option></select></label></section><section class="report-summary" id="admin-report-summary"></section><section class="table-wrap report-table-wrap"><table class="table report-table"><thead><tr><th class="sticky-date"><button class="sort-heading" id="sort-request-date" type="button">วัน–เวลาที่แจ้ง <span aria-hidden="true">↓</span></button></th><th>เลขที่คำขอ</th><th>สาขา</th><th>ลูกค้า</th><th>สินค้า / Part</th><th class="number-column">ต้องการ</th><th class="number-column">จัดสรร</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="admin-report-body"></tbody></table><footer class="report-pagination" id="admin-report-pagination"></footer></section>`);
+  app.innerHTML = shell(`<section class="page-header report-header"><div><h1>รายงานความต้องการและการจัดสรร</h1><p>แสดง 1 Part ต่อ 1 บรรทัด เรียงตามวันเวลาที่แจ้ง และส่งออกข้อมูล</p></div><button class="btn btn-excel" id="export-orders"><span aria-hidden="true">▦</span> Export Excel</button></section><section class="toolbar report-toolbar"><label class="field report-search">ค้นหา<input id="admin-order-search" placeholder="ลูกค้า สาขา รุ่น Part หรือเลขที่รายการ" /></label><label class="field">วันที่เริ่มต้น<input id="admin-order-start" type="date" /></label><label class="field">วันที่สิ้นสุด<input id="admin-order-end" type="date" /></label><label class="field compact">สถานะ<select id="admin-order-status"><option value="">ทั้งหมด</option><option value="PENDING">รอจัดสรร</option><option value="PARTIAL">จัดสรรบางส่วน</option><option value="ALLOCATED">จัดสรรครบ</option><option value="SENT">ส่งสินค้าแล้ว</option><option value="CANCELLED">ยกเลิก</option></select></label><label class="field compact">เรียงตาม<select id="admin-order-sort"><option value="desc">ใหม่สุดก่อน</option><option value="asc">เก่าสุดก่อน</option></select></label></section><section class="report-summary" id="admin-report-summary"></section><section class="table-wrap report-table-wrap"><table class="table report-table"><thead><tr><th class="sticky-date"><button class="sort-heading" id="sort-request-date" type="button">วัน–เวลาที่แจ้ง <span aria-hidden="true">↓</span></button></th><th>เลขที่คำขอ</th><th>สาขา</th><th>ลูกค้า</th><th>สินค้า / Part</th><th class="number-column">ต้องการ</th><th class="number-column">จัดสรร</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="admin-report-body"></tbody></table><footer class="report-pagination" id="admin-report-pagination"></footer></section>`);
 
-  const filterOrders = () => {
+  const filterRows = () => {
     const search = document.querySelector("#admin-order-search").value.trim().toLowerCase();
     const status = document.querySelector("#admin-order-status").value;
     const start = document.querySelector("#admin-order-start").value;
     const end = document.querySelector("#admin-order-end").value;
     const direction = document.querySelector("#admin-order-sort").value;
-    return orders.filter((order) => {
-      const requestDate = bangkokDateKey(order.created_at);
-      return (!status || order.status === status) && (!start || requestDate >= start) && (!end || requestDate <= end)
-        && (!search || `${order.id} ${order.customer_name} ${order.branch_id} ${order.branch_name} ${order.item_summary}`.toLowerCase().includes(search));
-    }).sort((left, right) => (timestamp(left.created_at).getTime() - timestamp(right.created_at).getTime()) * (direction === "asc" ? 1 : -1));
+    return reportRows.filter((row) => {
+      const requestDate = bangkokDateKey(row.created_at);
+      return (!status || row.status === status) && (!start || requestDate >= start) && (!end || requestDate <= end)
+        && (!search || `${row.request_id} ${row.customer_name} ${row.branch_id} ${row.branch_name} ${row.part_id} ${row.part_name_snapshot}`.toLowerCase().includes(search));
+    }).sort((left, right) => {
+      const byDate = (timestamp(left.created_at).getTime() - timestamp(right.created_at).getTime()) * (direction === "asc" ? 1 : -1);
+      return byDate || String(left.request_id).localeCompare(String(right.request_id)) || String(left.part_id).localeCompare(String(right.part_id));
+    });
   };
 
   const draw = () => {
-    const rows = filterOrders(); const totalPages = Math.max(1, Math.ceil(rows.length / pageSize)); page = Math.min(page, totalPages);
+    const rows = filterRows(); const totalPages = Math.max(1, Math.ceil(rows.length / pageSize)); page = Math.min(page, totalPages);
     const visible = rows.slice((page - 1) * pageSize, page * pageSize);
-    document.querySelector("#admin-report-summary").innerHTML = `<article><span>ทั้งหมด</span><b>${rows.length.toLocaleString("th-TH")} รายการ</b></article><article><span>ต้องการ</span><b>${rows.reduce((sum, order) => sum + Number(order.requested_total), 0).toLocaleString("th-TH")} เครื่อง</b></article><article><span>จัดสรรแล้ว</span><b>${rows.reduce((sum, order) => sum + Number(order.allocated_total), 0).toLocaleString("th-TH")} เครื่อง</b></article>`;
-    document.querySelector("#admin-report-body").innerHTML = visible.length ? visible.map((order) => `<tr><td class="sticky-date"><time datetime="${escapeHtml(order.created_at)}">${fmtDate(order.created_at)}</time></td><td><b class="request-id">${escapeHtml(order.id)}</b></td><td><b>${escapeHtml(order.branch_name)}</b><small>JIB${escapeHtml(order.branch_id)}</small></td><td>${escapeHtml(order.customer_name)}</td><td class="product-cell" title="${escapeHtml(order.item_summary)}">${escapeHtml(order.item_summary)}</td><td class="number-column"><b>${Number(order.requested_total).toLocaleString("th-TH")}</b></td><td class="number-column"><b>${Number(order.allocated_total).toLocaleString("th-TH")}</b></td><td>${badge(order.status)}</td><td><button class="btn btn-outline btn-small" data-allocate="${escapeHtml(order.id)}">${order.status === "PENDING" ? "จัดสรรสินค้า" : "ดูรายละเอียด"}</button></td></tr>`).join("") : `<tr><td colspan="9" class="empty">ไม่พบรายการความต้องการตามตัวกรอง</td></tr>`;
+    document.querySelector("#admin-report-summary").innerHTML = `<article><span>ทั้งหมด</span><b>${rows.length.toLocaleString("th-TH")} Part</b></article><article><span>ต้องการ</span><b>${rows.reduce((sum, row) => sum + Number(row.requested_quantity), 0).toLocaleString("th-TH")} เครื่อง</b></article><article><span>จัดสรรแล้ว</span><b>${rows.reduce((sum, row) => sum + Number(row.allocated_quantity), 0).toLocaleString("th-TH")} เครื่อง</b></article>`;
+    document.querySelector("#admin-report-body").innerHTML = visible.length ? visible.map((row) => `<tr><td class="sticky-date"><time datetime="${escapeHtml(row.created_at)}">${fmtDate(row.created_at)}</time></td><td><b class="request-id">${escapeHtml(row.request_id)}</b></td><td><b>${escapeHtml(row.branch_name)}</b><small>JIB${escapeHtml(row.branch_id)}</small></td><td>${escapeHtml(row.customer_name)}</td><td class="product-cell" title="${escapeHtml(row.part_name_snapshot)}"><b>${escapeHtml(row.part_name_snapshot)}</b><small>${escapeHtml(row.part_id)}</small></td><td class="number-column"><b>${Number(row.requested_quantity).toLocaleString("th-TH")}</b></td><td class="number-column"><b>${Number(row.allocated_quantity).toLocaleString("th-TH")}</b></td><td>${badge(row.status)}</td><td><button class="btn btn-outline btn-small" data-allocate="${escapeHtml(row.request_id)}">${row.status === "PENDING" ? "จัดสรรสินค้า" : "ดูรายละเอียด"}</button></td></tr>`).join("") : `<tr><td colspan="9" class="empty">ไม่พบรายการความต้องการตามตัวกรอง</td></tr>`;
     const first = rows.length ? (page - 1) * pageSize + 1 : 0; const last = Math.min(page * pageSize, rows.length);
-    document.querySelector("#admin-report-pagination").innerHTML = `<span>แสดง ${first.toLocaleString("th-TH")}–${last.toLocaleString("th-TH")} จาก ${rows.length.toLocaleString("th-TH")} รายการ</span><div><button class="btn btn-outline btn-small" id="report-prev" ${page === 1 ? "disabled" : ""} aria-label="หน้าก่อนหน้า">‹</button><b>${page.toLocaleString("th-TH")} / ${totalPages.toLocaleString("th-TH")}</b><button class="btn btn-outline btn-small" id="report-next" ${page === totalPages ? "disabled" : ""} aria-label="หน้าถัดไป">›</button></div>`;
+    document.querySelector("#admin-report-pagination").innerHTML = `<span>แสดง ${first.toLocaleString("th-TH")}–${last.toLocaleString("th-TH")} จาก ${rows.length.toLocaleString("th-TH")} Part</span><div><button class="btn btn-outline btn-small" id="report-prev" ${page === 1 ? "disabled" : ""} aria-label="หน้าก่อนหน้า">‹</button><b>${page.toLocaleString("th-TH")} / ${totalPages.toLocaleString("th-TH")}</b><button class="btn btn-outline btn-small" id="report-next" ${page === totalPages ? "disabled" : ""} aria-label="หน้าถัดไป">›</button></div>`;
     document.querySelectorAll("[data-allocate]").forEach((button) => button.onclick = () => allocationDialog(button.dataset.allocate));
     document.querySelector("#report-prev").onclick = () => { page -= 1; draw(); };
     document.querySelector("#report-next").onclick = () => { page += 1; draw(); };
@@ -162,17 +165,16 @@ async function renderAdminOrders() {
 
   ["#admin-order-search", "#admin-order-start", "#admin-order-end", "#admin-order-status", "#admin-order-sort"].forEach((selector) => document.querySelector(selector).addEventListener(selector === "#admin-order-search" ? "input" : "change", () => { page = 1; draw(); }));
   document.querySelector("#sort-request-date").onclick = () => { const input = document.querySelector("#admin-order-sort"); input.value = input.value === "desc" ? "asc" : "desc"; page = 1; draw(); };
-  document.querySelector("#export-orders").onclick = async () => exportAdminOrders(filterOrders());
+  document.querySelector("#export-orders").onclick = async () => exportAdminOrders(filterRows());
   draw();
 }
 
-async function exportAdminOrders(filteredOrders) {
+async function exportAdminOrders(filteredRows) {
   if (!window.XLSX) return showMessage("ยังโหลดตัวส่งออก Excel ไม่สำเร็จ กรุณารีเฟรชแล้วลองอีกครั้ง", true);
   const button = document.querySelector("#export-orders"); button.disabled = true; button.textContent = "กำลังสร้างไฟล์…";
   try {
-    const { rows } = await api("/api/admin/orders/export"); const ids = new Set(filteredOrders.map((order) => order.id)); const direction = document.querySelector("#admin-order-sort").value;
     const safe = (value) => { const text = String(value ?? ""); return /^[=+\-@]/.test(text) ? `'${text}` : text; };
-    const output = rows.filter((row) => ids.has(row.request_id)).sort((left, right) => (timestamp(left.created_at).getTime() - timestamp(right.created_at).getTime()) * (direction === "asc" ? 1 : -1)).map((row) => ({
+    const output = filteredRows.map((row) => ({
       "วัน–เวลาที่แจ้ง": timestamp(row.created_at), "เลขที่คำขอ": safe(row.request_id), "รหัสสาขา": `JIB${row.branch_id}`, "สาขา": safe(row.branch_name), "ลูกค้า": safe(row.customer_name),
       "Part": safe(row.part_id), "สินค้า": safe(row.part_name_snapshot), "ราคาขายอ้างอิง": Number(row.sell_price_snapshot), "จำนวนที่ต้องการ": Number(row.requested_quantity), "จำนวนที่จัดสรร": Number(row.allocated_quantity),
       "สถานะ": statusLabel(row.status), "วัน–เวลาจัดสรร": row.allocated_at ? timestamp(row.allocated_at) : "", "ผู้จัดสรร": safe(row.allocated_by_name), "วัน–เวลาส่งสินค้า": row.sent_at ? timestamp(row.sent_at) : "", "ผู้บันทึกส่ง": safe(row.sent_by_name),
