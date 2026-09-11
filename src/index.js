@@ -42,7 +42,7 @@ async function route(request, env, url) {
   const orderMatch = pathname.match(/^\/api\/orders\/([^/]+)$/);
   if (orderMatch && request.method === "GET") return getOrder(env, user, decodeURIComponent(orderMatch[1]));
   if (orderMatch && request.method === "PATCH") return updateOrder(request, env, user, decodeURIComponent(orderMatch[1]));
-  if (orderMatch && request.method === "DELETE") return cancelOrder(env, user, decodeURIComponent(orderMatch[1]));
+  if (orderMatch && request.method === "DELETE") return deleteBranchOrder(env, user, decodeURIComponent(orderMatch[1]));
 
   if (pathname === "/api/branches" && request.method === "GET") return listBranches(env, user);
   if (pathname === "/api/branches" && request.method === "POST") return createBranch(request, env, user);
@@ -67,6 +67,7 @@ async function route(request, env, url) {
   if (pathname === "/api/admin/orders/export" && request.method === "GET") return listAdminExportRows(env, user);
   const adminOrderMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)$/);
   if (adminOrderMatch && request.method === "GET") return getAdminOrder(env, user, decodeURIComponent(adminOrderMatch[1]));
+  if (adminOrderMatch && request.method === "DELETE") return deleteAdminOrder(env, user, decodeURIComponent(adminOrderMatch[1]));
   const allocationMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/allocation$/);
   if (allocationMatch && request.method === "PATCH") return allocateOrder(request, env, user, decodeURIComponent(allocationMatch[1]));
   const sentMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/sent$/);
@@ -409,12 +410,17 @@ async function updateOrder(request, env, user, orderId) {
   return json({ ok: true });
 }
 
-async function cancelOrder(env, user, orderId) {
+async function deleteBranchOrder(env, user, orderId) {
   requireBranch(user);
-  const result = await env.DB.prepare("UPDATE demand_requests SET status = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND branch_id = ? AND status = 'PENDING'").bind(orderId, user.branch_id).run();
-  if (!result.meta.changes) throw new AppError(409, "ยกเลิกได้เฉพาะรายการที่รอจัดสรร");
-  await audit(env, user, "CANCEL", "DEMAND", orderId, null);
-  return json({ cancelled: true });
+  const order = await env.DB.prepare("SELECT id, branch_id, customer_name, status FROM demand_requests WHERE id = ? AND branch_id = ?").bind(orderId, user.branch_id).first();
+  if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
+  if (order.status !== "PENDING") throw new AppError(409, "ลบได้เฉพาะรายการที่รอจัดสรร");
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM demand_items WHERE request_id = ?").bind(orderId),
+    env.DB.prepare("DELETE FROM demand_requests WHERE id = ? AND branch_id = ?").bind(orderId, user.branch_id),
+  ]);
+  await audit(env, user, "DELETE", "DEMAND", orderId, { by: "BRANCH", branchId: order.branch_id, customerName: order.customer_name, status: order.status });
+  return json({ deleted: true });
 }
 
 async function listAdminOrders(env, user) {
@@ -448,6 +454,20 @@ async function getAdminOrder(env, user, orderId) {
   if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
   const { results: items } = await env.DB.prepare("SELECT id, part_id, part_name_snapshot, sell_price_snapshot, requested_quantity, allocated_quantity, item_note FROM demand_items WHERE request_id = ? ORDER BY part_name_snapshot").bind(orderId).all();
   return json({ order, items });
+}
+
+async function deleteAdminOrder(env, user, orderId) {
+  requireAdmin(user);
+  const order = await env.DB.prepare(`SELECT d.id, d.branch_id, d.customer_name, d.status, COUNT(di.id) AS item_count
+    FROM demand_requests d LEFT JOIN demand_items di ON di.request_id = d.id
+    WHERE d.id = ? GROUP BY d.id`).bind(orderId).first();
+  if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM demand_items WHERE request_id = ?").bind(orderId),
+    env.DB.prepare("DELETE FROM demand_requests WHERE id = ?").bind(orderId),
+  ]);
+  await audit(env, user, "DELETE", "DEMAND", orderId, { by: "ADMIN", branchId: order.branch_id, customerName: order.customer_name, status: order.status, itemCount: Number(order.item_count) });
+  return json({ deleted: true });
 }
 
 async function allocateOrder(request, env, user, orderId) {
