@@ -47,6 +47,10 @@ async function route(request, env, url) {
   if (pathname === "/api/branches" && request.method === "GET") return listBranches(env, user);
   if (pathname === "/api/branches" && request.method === "POST") return createBranch(request, env, user);
   if (pathname === "/api/branches/import" && request.method === "POST") return importBranches(request, env, user);
+  const branchSuspendMatch = pathname.match(/^\/api\/branches\/([^/]+)\/suspend$/);
+  if (branchSuspendMatch && request.method === "POST") return suspendBranch(env, user, decodeURIComponent(branchSuspendMatch[1]));
+  const branchResumeMatch = pathname.match(/^\/api\/branches\/([^/]+)\/resume$/);
+  if (branchResumeMatch && request.method === "POST") return resumeBranch(env, user, decodeURIComponent(branchResumeMatch[1]));
   const branchMatch = pathname.match(/^\/api\/branches\/([^/]+)$/);
   if (branchMatch && request.method === "PATCH") return updateBranch(request, env, user, decodeURIComponent(branchMatch[1]));
   if (branchMatch && request.method === "DELETE") return removeBranch(env, user, decodeURIComponent(branchMatch[1]));
@@ -121,7 +125,7 @@ async function currentUser(request, env) {
 
 async function listBranches(env, user) {
   requireAdmin(user);
-  const { results } = await env.DB.prepare("SELECT b.id, b.name, u.username FROM branches b LEFT JOIN users u ON u.branch_id = b.id WHERE b.active = 1 ORDER BY b.id").all();
+  const { results } = await env.DB.prepare("SELECT b.id, b.name, b.status, u.username FROM branches b LEFT JOIN users u ON u.branch_id = b.id WHERE b.status != 'REMOVED' ORDER BY b.id").all();
   return json({ branches: results });
 }
 
@@ -132,7 +136,7 @@ async function createBranch(request, env, user) {
   if (exists) throw new AppError(409, "มีรหัสสาขานี้แล้ว");
   const credential = await hashPassword(requiredPassword(env.INITIAL_PASSWORD, "รหัสผ่านเริ่มต้นระบบ"));
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO branches (id, name, active) VALUES (?, ?, 1)").bind(input.id, input.name),
+    env.DB.prepare("INSERT INTO branches (id, name, active, status) VALUES (?, ?, 1, 'ACTIVE')").bind(input.id, input.name),
     userInsertStatement(env, `JIB${input.id}`, input.name, "BRANCH", input.id, credential, true),
   ]);
   await audit(env, user, "CREATE", "BRANCH", String(input.id), input);
@@ -142,7 +146,7 @@ async function createBranch(request, env, user) {
 async function updateBranch(request, env, user, branchId) {
   requireAdmin(user);
   const id = Number(branchId);
-  const current = await env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND active = 1").bind(id).first();
+  const current = await env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND status != 'REMOVED'").bind(id).first();
   if (!current) throw new AppError(404, "ไม่พบสาขา");
   const input = branchInput({ id, name: (await bodyJson(request)).name });
   await env.DB.batch([
@@ -156,14 +160,41 @@ async function updateBranch(request, env, user, branchId) {
 async function removeBranch(env, user, branchId) {
   requireAdmin(user);
   const id = Number(branchId);
-  const branch = await env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND active = 1").bind(id).first();
+  const branch = await env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND status != 'REMOVED'").bind(id).first();
   if (!branch) throw new AppError(404, "ไม่พบสาขา");
   await env.DB.batch([
-    env.DB.prepare("UPDATE branches SET active = 0 WHERE id = ?").bind(id),
+    env.DB.prepare("UPDATE branches SET active = 0, status = 'REMOVED' WHERE id = ?").bind(id),
     env.DB.prepare("UPDATE users SET active = 0 WHERE branch_id = ?").bind(id),
   ]);
   await audit(env, user, "REMOVE", "BRANCH", String(id), { id, name: branch.name });
   return json({ removed: true });
+}
+
+async function suspendBranch(env, user, branchId) {
+  requireAdmin(user);
+  const id = Number(branchId);
+  const branch = await env.DB.prepare("SELECT id, name, status FROM branches WHERE id = ? AND status != 'REMOVED'").bind(id).first();
+  if (!branch) throw new AppError(404, "ไม่พบสาขา");
+  if (branch.status === "SUSPENDED") return json({ suspended: true, unchanged: true });
+  await env.DB.batch([
+    env.DB.prepare("UPDATE branches SET active = 0, status = 'SUSPENDED' WHERE id = ?").bind(id),
+    env.DB.prepare("UPDATE users SET active = 0 WHERE branch_id = ?").bind(id),
+  ]);
+  await audit(env, user, "SUSPEND", "BRANCH", String(id), { id, name: branch.name });
+  return json({ suspended: true });
+}
+
+async function resumeBranch(env, user, branchId) {
+  requireAdmin(user);
+  const id = Number(branchId);
+  const branch = await env.DB.prepare("SELECT id, name, status FROM branches WHERE id = ? AND status = 'SUSPENDED'").bind(id).first();
+  if (!branch) throw new AppError(404, "ไม่พบสาขาที่ระงับใช้งาน");
+  await env.DB.batch([
+    env.DB.prepare("UPDATE branches SET active = 1, status = 'ACTIVE' WHERE id = ?").bind(id),
+    env.DB.prepare("UPDATE users SET active = 1 WHERE branch_id = ?").bind(id),
+  ]);
+  await audit(env, user, "RESUME", "BRANCH", String(id), { id, name: branch.name });
+  return json({ resumed: true });
 }
 
 async function importBranches(request, env, user) {
@@ -206,9 +237,9 @@ async function importBranches(request, env, user) {
     else reactivated += 1;
   }
   for (const group of chunk(branches, 50)) {
-    const values = group.map(() => "(?, ?, 1)").join(", ");
+    const values = group.map(() => "(?, ?, 1, 'ACTIVE')").join(", ");
     const bindings = group.flatMap((branch) => [branch.id, branch.name]);
-    statements.push(env.DB.prepare(`INSERT INTO branches (id, name, active) VALUES ${values} ON CONFLICT(id) DO UPDATE SET name = excluded.name, active = 1`).bind(...bindings));
+    statements.push(env.DB.prepare(`INSERT INTO branches (id, name, active, status) VALUES ${values} ON CONFLICT(id) DO UPDATE SET name = excluded.name, active = 1, status = 'ACTIVE'`).bind(...bindings));
   }
   for (const group of chunk(branches, 12)) {
     const values = group.map(() => "(?, ?, ?, 'BRANCH', ?, ?, ?, 1)").join(", ");
