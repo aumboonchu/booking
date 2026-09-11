@@ -39,6 +39,10 @@ async function route(request, env, url) {
   if (pathname === "/api/catalog" && request.method === "GET") return catalog(env);
   if (pathname === "/api/orders" && request.method === "GET") return listOrders(env, user);
   if (pathname === "/api/orders" && request.method === "POST") return createOrder(request, env, user);
+  const orderMatch = pathname.match(/^\/api\/orders\/([^/]+)$/);
+  if (orderMatch && request.method === "GET") return getOrder(env, user, decodeURIComponent(orderMatch[1]));
+  if (orderMatch && request.method === "PATCH") return updateOrder(request, env, user, decodeURIComponent(orderMatch[1]));
+  if (orderMatch && request.method === "DELETE") return cancelOrder(env, user, decodeURIComponent(orderMatch[1]));
 
   if (pathname === "/api/branches" && request.method === "GET") return listBranches(env, user);
   if (pathname === "/api/branches" && request.method === "POST") return createBranch(request, env, user);
@@ -53,21 +57,14 @@ async function route(request, env, url) {
   if (partMatch && request.method === "PATCH") return updatePart(request, env, user, decodeURIComponent(partMatch[1]));
   if (partMatch && request.method === "DELETE") return removePart(env, user, decodeURIComponent(partMatch[1]));
 
-  if (pathname === "/api/rounds" && request.method === "GET") return listRounds(env, user);
-  if (pathname === "/api/rounds" && request.method === "POST") return createRound(request, env, user);
-  const roundMatch = pathname.match(/^\/api\/rounds\/([^/]+)$/);
-  const roundPartsGetMatch = pathname.match(/^\/api\/rounds\/([^/]+)\/parts$/);
-  if (roundPartsGetMatch && request.method === "GET") return getRoundParts(env, user, decodeURIComponent(roundPartsGetMatch[1]));
-  if (roundMatch && request.method === "PATCH") return updateRound(request, env, user, decodeURIComponent(roundMatch[1]));
-  const roundPartMatch = pathname.match(/^\/api\/rounds\/([^/]+)\/parts$/);
-  if (roundPartMatch && request.method === "PUT") return setRoundParts(request, env, user, decodeURIComponent(roundPartMatch[1]));
-
   if (pathname === "/api/admin/summary" && request.method === "GET") return summary(env, user);
   if (pathname === "/api/admin/orders" && request.method === "GET") return listAdminOrders(env, user);
   const adminOrderMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)$/);
   if (adminOrderMatch && request.method === "GET") return getAdminOrder(env, user, decodeURIComponent(adminOrderMatch[1]));
   const allocationMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/allocation$/);
   if (allocationMatch && request.method === "PATCH") return allocateOrder(request, env, user, decodeURIComponent(allocationMatch[1]));
+  const sentMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/sent$/);
+  if (sentMatch && request.method === "POST") return markOrderSent(env, user, decodeURIComponent(sentMatch[1]));
 
   throw new AppError(404, "ไม่พบปลายทางที่ร้องขอ");
 }
@@ -198,7 +195,8 @@ async function removePart(env, user, id) {
   requireAdmin(user);
   const part = await env.DB.prepare("SELECT id FROM parts WHERE id = ?").bind(id).first();
   if (!part) throw new AppError(404, "ไม่พบ Part");
-  const used = await env.DB.prepare("SELECT 1 FROM order_items WHERE part_id = ? LIMIT 1").bind(id).first();
+  const used = await env.DB.prepare(`SELECT 1 FROM order_items WHERE part_id = ?
+    UNION ALL SELECT 1 FROM demand_items WHERE part_id = ? LIMIT 1`).bind(id, id).first();
   if (used) {
     await env.DB.prepare("UPDATE parts SET status = 'INACTIVE', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(id).run();
     await audit(env, user, "INACTIVATE", "PART", id, { reason: "has_orders" });
@@ -242,118 +240,100 @@ async function importParts(request, env, user) {
   return json({ valid: true, inserted, updated, errors: [] });
 }
 
-async function listRounds(env, user) {
-  if (user.role !== "ADMIN" && user.role !== "BRANCH") throw new AppError(403, "ไม่มีสิทธิ์เข้าถึง");
-  const { results } = await env.DB.prepare(`SELECT r.*, COUNT(rp.part_id) AS part_count FROM rounds r
-    LEFT JOIN round_parts rp ON rp.round_id = r.id GROUP BY r.id ORDER BY r.opens_at DESC`).all();
-  return json({ rounds: results });
-}
-
-async function createRound(request, env, user) {
-  requireAdmin(user);
-  const body = await bodyJson(request);
-  const name = cleanText(body.name, 100); const opensAt = cleanText(body.opensAt, 30); const closesAt = cleanText(body.closesAt, 30);
-  const status = ["DRAFT", "OPEN", "CLOSED"].includes(body.status) ? body.status : "DRAFT";
-  if (!name || !opensAt || !closesAt || new Date(opensAt) >= new Date(closesAt)) throw new AppError(400, "ตรวจสอบชื่อและช่วงเวลาเปิดรับ");
-  const id = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO rounds (id, name, opens_at, closes_at, status) VALUES (?, ?, ?, ?, ?)").bind(id, name, opensAt, closesAt, status).run();
-  await audit(env, user, "CREATE", "ROUND", id, { name, opensAt, closesAt, status });
-  return json({ round: { id, name, opensAt, closesAt, status } }, 201);
-}
-
-async function updateRound(request, env, user, id) {
-  requireAdmin(user);
-  const current = await env.DB.prepare("SELECT * FROM rounds WHERE id = ?").bind(id).first();
-  if (!current) throw new AppError(404, "ไม่พบรอบจอง");
-  const body = await bodyJson(request);
-  const name = cleanText(body.name ?? current.name, 100); const opensAt = cleanText(body.opensAt ?? current.opens_at, 30); const closesAt = cleanText(body.closesAt ?? current.closes_at, 30);
-  const status = ["DRAFT", "OPEN", "CLOSED"].includes(body.status ?? current.status) ? (body.status ?? current.status) : null;
-  if (!status || !name || new Date(opensAt) >= new Date(closesAt)) throw new AppError(400, "ข้อมูลรอบจองไม่ถูกต้อง");
-  await env.DB.prepare("UPDATE rounds SET name = ?, opens_at = ?, closes_at = ?, status = ? WHERE id = ?").bind(name, opensAt, closesAt, status, id).run();
-  await audit(env, user, "UPDATE", "ROUND", id, { name, opensAt, closesAt, status });
-  return json({ round: { id, name, opensAt, closesAt, status } });
-}
-
-async function setRoundParts(request, env, user, roundId) {
-  requireAdmin(user);
-  const { parts } = await bodyJson(request);
-  if (!Array.isArray(parts)) throw new AppError(400, "รูปแบบรายการสินค้าไม่ถูกต้อง");
-  const statements = [env.DB.prepare("DELETE FROM round_parts WHERE round_id = ?").bind(roundId)];
-  for (const item of parts) {
-    const id = cleanText(item.partId, 100); const quota = item.quota === null || item.quota === "" ? null : Number(item.quota);
-    if (!id || (quota !== null && (!Number.isInteger(quota) || quota < 0))) throw new AppError(400, "ข้อมูลสินค้าในรอบไม่ถูกต้อง");
-    statements.push(env.DB.prepare("INSERT INTO round_parts (round_id, part_id, quota) VALUES (?, ?, ?)").bind(roundId, id, quota));
-  }
-  await env.DB.batch(statements);
-  await audit(env, user, "SET_PARTS", "ROUND", roundId, { count: parts.length });
-  return json({ ok: true });
-}
-
-async function getRoundParts(env, user, roundId) {
-  requireAdmin(user);
-  const { results } = await env.DB.prepare("SELECT part_id, quota FROM round_parts WHERE round_id = ? ORDER BY part_id").bind(roundId).all();
-  return json({ parts: results });
-}
-
 async function catalog(env) {
-  const { results } = await env.DB.prepare(`SELECT r.id AS round_id, r.name AS round_name, r.opens_at, r.closes_at,
-    p.id, p.name, p.sell_price, rp.quota
-    FROM rounds r JOIN round_parts rp ON rp.round_id = r.id JOIN parts p ON p.id = rp.part_id
-    WHERE r.status = 'OPEN' AND p.status = 'OPEN' AND datetime(r.opens_at) <= datetime('now') AND datetime(r.closes_at) >= datetime('now')
-    ORDER BY r.opens_at DESC, p.name`).all();
+  const { results } = await env.DB.prepare("SELECT id, name, sell_price FROM parts WHERE status = 'OPEN' ORDER BY name, id").all();
   return json({ items: results });
 }
 
 async function createOrder(request, env, user) {
   requireBranch(user);
   const body = await bodyJson(request);
-  const roundId = cleanText(body.roundId, 80); const note = cleanText(body.note, 500);
-  if (!roundId || !Array.isArray(body.items) || body.items.length === 0) throw new AppError(400, "เลือกสินค้าอย่างน้อย 1 รายการ");
-  const round = await env.DB.prepare("SELECT id FROM rounds WHERE id = ? AND status = 'OPEN' AND datetime(opens_at) <= datetime('now') AND datetime(closes_at) >= datetime('now')").bind(roundId).first();
-  if (!round) throw new AppError(409, "รอบจองปิดแล้วหรือไม่พร้อมใช้งาน");
-  const ids = [...new Set(body.items.map((item) => cleanText(item.partId, 100)))];
+  const customerName = cleanText(body.customerName, 200); const note = cleanText(body.note, 500);
+  if (!customerName) throw new AppError(400, "กรอกชื่อลูกค้า");
+  if (!Array.isArray(body.items) || body.items.length === 0) throw new AppError(400, "เลือกสินค้าอย่างน้อย 1 รายการ");
+  const ids = [...new Set(body.items.map((item) => cleanText(item.partId, 100).toUpperCase()))];
   if (ids.length !== body.items.length || ids.some((id) => !id)) throw new AppError(400, "รายการสินค้าไม่ถูกต้อง");
-  const products = await env.DB.prepare(`SELECT p.id, p.name, p.sell_price FROM round_parts rp JOIN parts p ON p.id = rp.part_id
-    WHERE rp.round_id = ? AND p.status = 'OPEN' AND p.id IN (${ids.map(() => "?").join(",")})`).bind(roundId, ...ids).all();
-  if (products.results.length !== ids.length) throw new AppError(409, "มีสินค้าที่ปิดรับจองหรือไม่อยู่ในรอบนี้");
+  const products = await env.DB.prepare(`SELECT id, name, sell_price FROM parts WHERE status = 'OPEN' AND id IN (${ids.map(() => "?").join(",")})`).bind(...ids).all();
+  if (products.results.length !== ids.length) throw new AppError(409, "มีสินค้าที่ปิดรับแจ้งความต้องการ");
   const byId = new Map(products.results.map((part) => [part.id, part]));
-  const orderId = `PO-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
-  const statements = [env.DB.prepare("INSERT INTO orders (id, branch_id, round_id, note) VALUES (?, ?, ?, ?)").bind(orderId, user.branch_id, roundId, note || null)];
+  const orderId = `REQ-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+  const statements = [env.DB.prepare("INSERT INTO demand_requests (id, branch_id, customer_name, note) VALUES (?, ?, ?, ?)").bind(orderId, user.branch_id, customerName, note || null)];
   for (const item of body.items) {
-    const quantity = Number(item.quantity); const part = byId.get(item.partId);
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new AppError(400, "จำนวนที่ขอจองไม่ถูกต้อง");
-    statements.push(env.DB.prepare("INSERT INTO order_items (id, order_id, part_id, part_name_snapshot, sell_price_snapshot, requested_quantity) VALUES (?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), orderId, part.id, part.name, part.sell_price, quantity));
+    const quantity = Number(item.quantity); const part = byId.get(cleanText(item.partId, 100).toUpperCase());
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new AppError(400, "จำนวนที่ต้องการไม่ถูกต้อง");
+    statements.push(env.DB.prepare("INSERT INTO demand_items (id, request_id, part_id, part_name_snapshot, sell_price_snapshot, requested_quantity) VALUES (?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), orderId, part.id, part.name, part.sell_price, quantity));
   }
   await env.DB.batch(statements);
-  await audit(env, user, "CREATE", "ORDER", orderId, { roundId, items: body.items.length });
+  await audit(env, user, "CREATE", "DEMAND", orderId, { customerName, items: body.items.length });
   return json({ orderId }, 201);
 }
 
 async function listOrders(env, user) {
-  const conditions = user.role === "BRANCH" ? "WHERE o.branch_id = ?" : "";
-  const statement = env.DB.prepare(`SELECT o.*, b.name AS branch_name, r.name AS round_name,
-    SUM(oi.requested_quantity) AS requested_total, SUM(COALESCE(oi.allocated_quantity, 0)) AS allocated_total
-    FROM orders o JOIN branches b ON b.id = o.branch_id JOIN rounds r ON r.id = o.round_id JOIN order_items oi ON oi.order_id = o.id
-    ${conditions} GROUP BY o.id ORDER BY o.created_at DESC`);
+  const conditions = user.role === "BRANCH" ? "WHERE d.branch_id = ?" : "";
+  const statement = env.DB.prepare(`SELECT d.*, b.name AS branch_name,
+    SUM(di.requested_quantity) AS requested_total, SUM(di.allocated_quantity) AS allocated_total,
+    GROUP_CONCAT(di.part_name_snapshot || ' ×' || di.requested_quantity, ', ') AS item_summary
+    FROM demand_requests d JOIN branches b ON b.id = d.branch_id JOIN demand_items di ON di.request_id = d.id
+    ${conditions} GROUP BY d.id ORDER BY d.created_at DESC`);
   const { results } = user.role === "BRANCH" ? await statement.bind(user.branch_id).all() : await statement.all();
   return json({ orders: results });
 }
 
+async function getOrder(env, user, orderId) {
+  requireBranch(user);
+  const order = await env.DB.prepare("SELECT d.*, b.name AS branch_name FROM demand_requests d JOIN branches b ON b.id = d.branch_id WHERE d.id = ? AND d.branch_id = ?").bind(orderId, user.branch_id).first();
+  if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
+  const { results: items } = await env.DB.prepare("SELECT id, part_id, part_name_snapshot, sell_price_snapshot, requested_quantity, allocated_quantity FROM demand_items WHERE request_id = ? ORDER BY part_name_snapshot").bind(orderId).all();
+  return json({ order, items });
+}
+
+async function updateOrder(request, env, user, orderId) {
+  requireBranch(user);
+  const order = await env.DB.prepare("SELECT id, status FROM demand_requests WHERE id = ? AND branch_id = ?").bind(orderId, user.branch_id).first();
+  if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
+  if (order.status !== "PENDING") throw new AppError(409, "แก้ไขได้เฉพาะรายการที่รอจัดสรร");
+  const body = await bodyJson(request); const customerName = cleanText(body.customerName, 200); const note = cleanText(body.note, 500);
+  if (!customerName || !Array.isArray(body.items) || body.items.length === 0) throw new AppError(400, "ข้อมูลรายการไม่ครบถ้วน");
+  const source = await env.DB.prepare("SELECT id FROM demand_items WHERE request_id = ?").bind(orderId).all();
+  const allowed = new Set(source.results.map((item) => item.id)); const received = new Set(); const statements = [];
+  for (const item of body.items) {
+    const quantity = Number(item.quantity);
+    if (!allowed.has(item.itemId) || received.has(item.itemId) || !Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new AppError(400, "จำนวนที่ต้องการไม่ถูกต้อง");
+    received.add(item.itemId);
+    statements.push(env.DB.prepare("UPDATE demand_items SET requested_quantity = ? WHERE id = ? AND request_id = ?").bind(quantity, item.itemId, orderId));
+  }
+  if (body.items.length !== allowed.size) throw new AppError(400, "รายการสินค้าไม่ครบถ้วน");
+  statements.push(env.DB.prepare("UPDATE demand_requests SET customer_name = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(customerName, note || null, orderId));
+  await env.DB.batch(statements);
+  await audit(env, user, "UPDATE", "DEMAND", orderId, { customerName });
+  return json({ ok: true });
+}
+
+async function cancelOrder(env, user, orderId) {
+  requireBranch(user);
+  const result = await env.DB.prepare("UPDATE demand_requests SET status = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND branch_id = ? AND status = 'PENDING'").bind(orderId, user.branch_id).run();
+  if (!result.meta.changes) throw new AppError(409, "ยกเลิกได้เฉพาะรายการที่รอจัดสรร");
+  await audit(env, user, "CANCEL", "DEMAND", orderId, null);
+  return json({ cancelled: true });
+}
+
 async function listAdminOrders(env, user) {
   requireAdmin(user);
-  const { results } = await env.DB.prepare(`SELECT o.*, b.name AS branch_name, r.name AS round_name,
-    SUM(oi.requested_quantity) AS requested_total, SUM(COALESCE(oi.allocated_quantity, 0)) AS allocated_total
-    FROM orders o JOIN branches b ON b.id = o.branch_id JOIN rounds r ON r.id = o.round_id JOIN order_items oi ON oi.order_id = o.id
-    GROUP BY o.id ORDER BY CASE o.status WHEN 'PENDING' THEN 0 ELSE 1 END, o.created_at ASC`).all();
+  const { results } = await env.DB.prepare(`SELECT d.*, b.name AS branch_name,
+    SUM(di.requested_quantity) AS requested_total, SUM(di.allocated_quantity) AS allocated_total,
+    GROUP_CONCAT(di.part_name_snapshot || ' ×' || di.requested_quantity, ', ') AS item_summary
+    FROM demand_requests d JOIN branches b ON b.id = d.branch_id JOIN demand_items di ON di.request_id = d.id
+    GROUP BY d.id ORDER BY CASE d.status WHEN 'PENDING' THEN 0 WHEN 'PARTIAL' THEN 1 WHEN 'ALLOCATED' THEN 2 ELSE 3 END, d.created_at ASC`).all();
   return json({ orders: results });
 }
 
 async function getAdminOrder(env, user, orderId) {
   requireAdmin(user);
-  const order = await env.DB.prepare(`SELECT o.*, b.name AS branch_name, r.name AS round_name FROM orders o
-    JOIN branches b ON b.id = o.branch_id JOIN rounds r ON r.id = o.round_id WHERE o.id = ?`).bind(orderId).first();
-  if (!order) throw new AppError(404, "ไม่พบใบจอง");
-  const { results: items } = await env.DB.prepare("SELECT id, part_id, part_name_snapshot, sell_price_snapshot, requested_quantity, allocated_quantity, item_note FROM order_items WHERE order_id = ? ORDER BY part_name_snapshot").bind(orderId).all();
+  const order = await env.DB.prepare(`SELECT d.*, b.name AS branch_name, au.display_name AS allocated_by_name, su.display_name AS sent_by_name
+    FROM demand_requests d JOIN branches b ON b.id = d.branch_id
+    LEFT JOIN users au ON au.id = d.allocated_by LEFT JOIN users su ON su.id = d.sent_by WHERE d.id = ?`).bind(orderId).first();
+  if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
+  const { results: items } = await env.DB.prepare("SELECT id, part_id, part_name_snapshot, sell_price_snapshot, requested_quantity, allocated_quantity, item_note FROM demand_items WHERE request_id = ? ORDER BY part_name_snapshot").bind(orderId).all();
   return json({ order, items });
 }
 
@@ -361,30 +341,42 @@ async function allocateOrder(request, env, user, orderId) {
   requireAdmin(user);
   const body = await bodyJson(request);
   if (!Array.isArray(body.items) || body.items.length === 0) throw new AppError(400, "ต้องระบุจำนวนจัดสรร");
-  const order = await env.DB.prepare("SELECT id FROM orders WHERE id = ?").bind(orderId).first();
-  if (!order) throw new AppError(404, "ไม่พบใบจอง");
-  const source = await env.DB.prepare("SELECT id, requested_quantity FROM order_items WHERE order_id = ?").bind(orderId).all();
+  const order = await env.DB.prepare("SELECT id, status FROM demand_requests WHERE id = ?").bind(orderId).first();
+  if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
+  if (["SENT", "CANCELLED"].includes(order.status)) throw new AppError(409, "รายการนี้ปิดดำเนินการแล้ว");
+  const source = await env.DB.prepare("SELECT id, requested_quantity FROM demand_items WHERE request_id = ?").bind(orderId).all();
   const allowed = new Map(source.results.map((row) => [row.id, row.requested_quantity]));
-  const statements = [];
+  const received = new Set(); const statements = []; let requestedTotal = 0; let allocatedTotal = 0;
   for (const item of body.items) {
     const quantity = Number(item.allocatedQuantity);
-    if (!allowed.has(item.itemId) || !Number.isInteger(quantity) || quantity < 0 || quantity > allowed.get(item.itemId)) throw new AppError(400, "จำนวนจัดสรรไม่ถูกต้อง");
-    statements.push(env.DB.prepare("UPDATE order_items SET allocated_quantity = ?, item_note = ? WHERE id = ? AND order_id = ?").bind(quantity, cleanText(item.note, 300) || null, item.itemId, orderId));
+    if (!allowed.has(item.itemId) || received.has(item.itemId) || !Number.isInteger(quantity) || quantity < 0 || quantity > allowed.get(item.itemId)) throw new AppError(400, "จำนวนจัดสรรไม่ถูกต้อง");
+    received.add(item.itemId);
+    requestedTotal += Number(allowed.get(item.itemId)); allocatedTotal += quantity;
+    statements.push(env.DB.prepare("UPDATE demand_items SET allocated_quantity = ?, item_note = ? WHERE id = ? AND request_id = ?").bind(quantity, cleanText(item.note, 300) || null, item.itemId, orderId));
   }
-  const status = ["ALLOCATED", "REJECTED"].includes(body.status) ? body.status : "ALLOCATED";
-  statements.push(env.DB.prepare("UPDATE orders SET status = ?, admin_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, cleanText(body.adminNote, 500) || null, orderId));
+  if (body.items.length !== allowed.size) throw new AppError(400, "รายการจัดสรรไม่ครบถ้วน");
+  const status = allocatedTotal === 0 ? "PENDING" : allocatedTotal < requestedTotal ? "PARTIAL" : "ALLOCATED";
+  statements.push(env.DB.prepare("UPDATE demand_requests SET status = ?, admin_note = ?, allocated_at = CASE WHEN ? = 'PENDING' THEN NULL ELSE CURRENT_TIMESTAMP END, allocated_by = CASE WHEN ? = 'PENDING' THEN NULL ELSE ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, cleanText(body.adminNote, 500) || null, status, status, user.id, orderId));
   await env.DB.batch(statements);
-  await audit(env, user, "ALLOCATE", "ORDER", orderId, { status, count: body.items.length });
-  return json({ ok: true });
+  await audit(env, user, "ALLOCATE", "DEMAND", orderId, { status, requestedTotal, allocatedTotal });
+  return json({ ok: true, status });
+}
+
+async function markOrderSent(env, user, orderId) {
+  requireAdmin(user);
+  const result = await env.DB.prepare("UPDATE demand_requests SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, sent_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('PARTIAL', 'ALLOCATED')").bind(user.id, orderId).run();
+  if (!result.meta.changes) throw new AppError(409, "ต้องจัดสรรสินค้าก่อนบันทึกว่าส่งแล้ว");
+  await audit(env, user, "SEND", "DEMAND", orderId, null);
+  return json({ sent: true });
 }
 
 async function summary(env, user) {
   requireAdmin(user);
   const [orders, pending, allocated, branches] = await env.DB.batch([
-    env.DB.prepare("SELECT COUNT(*) AS value FROM orders"),
-    env.DB.prepare("SELECT COUNT(*) AS value FROM orders WHERE status = 'PENDING'"),
-    env.DB.prepare("SELECT COUNT(*) AS value FROM orders WHERE status = 'ALLOCATED'"),
-    env.DB.prepare("SELECT COUNT(DISTINCT branch_id) AS value FROM orders"),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM demand_requests"),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM demand_requests WHERE status = 'PENDING'"),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM demand_requests WHERE status IN ('PARTIAL', 'ALLOCATED')"),
+    env.DB.prepare("SELECT COUNT(DISTINCT branch_id) AS value FROM demand_requests"),
   ]);
   return json({ totalOrders: Number(orders.results[0].value), pendingOrders: Number(pending.results[0].value), allocatedOrders: Number(allocated.results[0].value), participatingBranches: Number(branches.results[0].value) });
 }
