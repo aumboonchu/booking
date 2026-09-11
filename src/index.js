@@ -46,6 +46,7 @@ async function route(request, env, url) {
 
   if (pathname === "/api/branches" && request.method === "GET") return listBranches(env, user);
   if (pathname === "/api/branches" && request.method === "POST") return createBranch(request, env, user);
+  if (pathname === "/api/branches/import" && request.method === "POST") return importBranches(request, env, user);
   const branchMatch = pathname.match(/^\/api\/branches\/([^/]+)$/);
   if (branchMatch && request.method === "PATCH") return updateBranch(request, env, user, decodeURIComponent(branchMatch[1]));
   if (branchMatch && request.method === "DELETE") return removeBranch(env, user, decodeURIComponent(branchMatch[1]));
@@ -163,6 +164,60 @@ async function removeBranch(env, user, branchId) {
   ]);
   await audit(env, user, "REMOVE", "BRANCH", String(id), { id, name: branch.name });
   return json({ removed: true });
+}
+
+async function importBranches(request, env, user) {
+  requireAdmin(user);
+  const body = await bodyJson(request);
+  if (!Array.isArray(body.rows) || body.rows.length === 0) throw new AppError(400, "ไม่พบข้อมูลสาขาสำหรับนำเข้า");
+  if (body.rows.length > 2000) throw new AppError(400, "นำเข้าได้ครั้งละไม่เกิน 2,000 สาขา");
+
+  const unique = new Map();
+  const errors = [];
+  for (const [index, row] of body.rows.entries()) {
+    try {
+      const input = branchInput(row);
+      if (unique.has(input.id)) throw new Error("รหัสสาขาซ้ำในไฟล์");
+      unique.set(input.id, input);
+    } catch (error) {
+      errors.push({ row: index + 2, message: error instanceof Error ? error.message : "ข้อมูลสาขาไม่ถูกต้อง" });
+    }
+  }
+  if (errors.length) {
+    const details = errors.slice(0, 10).map((error) => `แถว ${error.row}: ${error.message}`).join(" · ");
+    return json({ error: `พบข้อมูลไม่ถูกต้อง ${errors.length} แถว: ${details}`, errors }, 422);
+  }
+
+  const ids = [...unique.keys()];
+  const existingBranches = new Map();
+  for (const group of chunk(ids, 100)) {
+    const branchRows = await env.DB.prepare(`SELECT id, active FROM branches WHERE id IN (${group.map(() => "?").join(",")})`).bind(...group).all();
+    for (const branch of branchRows.results) existingBranches.set(Number(branch.id), branch);
+  }
+
+  const credential = await hashPassword(requiredPassword(env.INITIAL_PASSWORD, "รหัสผ่านเริ่มต้นระบบ"));
+  const statements = [];
+  let inserted = 0; let updated = 0; let reactivated = 0;
+  const branches = [...unique.values()];
+  for (const branch of branches) {
+    const current = existingBranches.get(branch.id);
+    if (!current) inserted += 1;
+    else if (Number(current.active) === 1) updated += 1;
+    else reactivated += 1;
+  }
+  for (const group of chunk(branches, 50)) {
+    const values = group.map(() => "(?, ?, 1)").join(", ");
+    const bindings = group.flatMap((branch) => [branch.id, branch.name]);
+    statements.push(env.DB.prepare(`INSERT INTO branches (id, name, active) VALUES ${values} ON CONFLICT(id) DO UPDATE SET name = excluded.name, active = 1`).bind(...bindings));
+  }
+  for (const group of chunk(branches, 12)) {
+    const values = group.map(() => "(?, ?, ?, 'BRANCH', ?, ?, ?, 1)").join(", ");
+    const bindings = group.flatMap((branch) => [crypto.randomUUID(), `JIB${branch.id}`, branch.name, branch.id, credential.salt, credential.hash]);
+    statements.push(env.DB.prepare(`INSERT INTO users (id, username, display_name, role, branch_id, password_salt, password_hash, must_change_password) VALUES ${values} ON CONFLICT(username) DO UPDATE SET display_name = excluded.display_name, role = excluded.role, branch_id = excluded.branch_id, active = 1`).bind(...bindings));
+  }
+  for (const group of chunk(statements, 80)) await env.DB.batch(group);
+  await audit(env, user, "IMPORT", "BRANCH", "batch", { inserted, updated, reactivated });
+  return json({ inserted, updated, reactivated, total: unique.size });
 }
 
 async function listParts(env, user) {
@@ -420,6 +475,8 @@ function branchInput(value) {
   if (!Number.isSafeInteger(id) || id < 1 || id > 99999 || !name) throw new AppError(400, "ข้อมูลสาขาไม่ถูกต้อง");
   return { id, name };
 }
+
+function chunk(values, size) { const groups = []; for (let index = 0; index < values.length; index += size) groups.push(values.slice(index, index + size)); return groups; }
 
 function userInsertStatement(env, username, displayName, role, branchId, credential, mustChangePassword = false) {
   return env.DB.prepare("INSERT INTO users (id, username, display_name, role, branch_id, password_salt, password_hash, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), username, displayName, role, branchId, credential.salt, credential.hash, mustChangePassword ? 1 : 0);

@@ -37,7 +37,7 @@ function shell(content) {
 async function renderApp() {
   if (!state.user) return boot();
   if (state.user.mustChangePassword) return renderChangePassword();
-  const pages = { dashboard: renderDashboard, branches: renderBranches, parts: renderParts, "admin-orders": renderAdminOrders, import: renderImport, catalog: renderCatalog, orders: renderOrders };
+  const pages = { dashboard: renderDashboard, branches: renderBranches, "branch-import": renderBranchImport, parts: renderParts, "admin-orders": renderAdminOrders, import: renderImport, catalog: renderCatalog, orders: renderOrders };
   const renderer = pages[state.page] || (state.user.role === "ADMIN" ? renderDashboard : renderCatalog);
   await renderer();
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", async () => { state.page = button.dataset.page; await renderApp(); }));
@@ -56,9 +56,42 @@ async function renderDashboard() {
 
 async function renderBranches() {
   const { branches } = await api("/api/branches");
-  app.innerHTML = shell(`<section class="page-header"><div><h1>ข้อมูลสาขา</h1><p>เพิ่ม แก้ไข หรือลบสาขาที่ใช้ระบบแจ้งความต้องการสินค้า</p></div><button class="btn btn-primary" id="add-branch">+ เพิ่มสาขา</button></section>${branches.length ? `<section class="branch-list">${branches.map((branch) => `<article class="branch-card"><div class="branch-card-head"><span class="branch-id">สาขา ${branch.id}</span><button class="btn btn-outline btn-small" data-edit-branch="${branch.id}">แก้ไข</button></div><h2>${escapeHtml(branch.name)}</h2><div class="branch-account"><span>บัญชีเข้าสู่ระบบ</span><b>${escapeHtml(branch.username || `JIB${branch.id}`)}</b></div></article>`).join("")}</section>` : `<section class="panel empty">ยังไม่มีสาขา</section>`}`);
+  app.innerHTML = shell(`<section class="page-header"><div><h1>ข้อมูลสาขา</h1><p>เพิ่ม แก้ไข ลบ หรือนำเข้าหลายสาขาจาก Excel</p></div><div class="header-actions"><button class="btn btn-outline" id="import-branches">นำเข้า Excel</button><button class="btn btn-primary" id="add-branch">+ เพิ่มสาขา</button></div></section>${branches.length ? `<section class="branch-list">${branches.map((branch) => `<article class="branch-card"><div class="branch-card-head"><span class="branch-id">สาขา ${branch.id}</span><button class="btn btn-outline btn-small" data-edit-branch="${branch.id}">แก้ไข</button></div><h2>${escapeHtml(branch.name)}</h2><div class="branch-account"><span>บัญชีเข้าสู่ระบบ</span><b>${escapeHtml(branch.username || `JIB${branch.id}`)}</b></div></article>`).join("")}</section>` : `<section class="panel empty">ยังไม่มีสาขา</section>`}`);
   document.querySelector("#add-branch").onclick = () => branchDialog();
+  document.querySelector("#import-branches").onclick = async () => { state.page = "branch-import"; await renderApp(); };
   document.querySelectorAll("[data-edit-branch]").forEach((button) => button.onclick = () => branchDialog(branches.find((branch) => String(branch.id) === button.dataset.editBranch)));
+}
+
+async function renderBranchImport() {
+  app.innerHTML = shell(`<section class="page-header"><div><h1>นำเข้าสาขาจาก Excel</h1><p>เพิ่มหรืออัปเดตหลายสาขาในครั้งเดียว</p></div><button class="btn btn-outline" data-page="branches">กลับไปข้อมูลสาขา</button></section><section class="panel import-panel"><h2>เลือกไฟล์ Branch.xlsx</h2><p class="muted">ต้องมีคอลัมน์ <b>ID</b> และ <b>Name</b> เช่นไฟล์ Branch.xlsx เดิม ระบบเพิ่มสาขาใหม่ อัปเดตชื่อสาขาที่มีรหัสเดิม และเปิดใช้สาขาที่เคยลบอีกครั้ง</p><p class="muted">รองรับครั้งละไม่เกิน 2,000 สาขา บัญชีใหม่จะเป็น JIB&lt;รหัสสาขา&gt; และใช้รหัสผ่านเริ่มต้นของระบบ</p><input id="branch-xlsx-file" type="file" accept=".xlsx,.xls" /><div id="branch-import-preview" class="empty">ยังไม่ได้เลือกไฟล์</div></section>`);
+  document.querySelector("#branch-xlsx-file").addEventListener("change", async (event) => {
+    const file = event.target.files[0]; if (!file) return;
+    if (!window.XLSX) return showMessage("กำลังโหลดตัวอ่าน Excel กรุณาลองอีกครั้ง", true);
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
+      const rows = rawRows.map((row) => ({ id: spreadsheetValue(row, ["id", "branch id", "branchid", "รหัสสาขา"]), name: spreadsheetValue(row, ["name", "branch name", "branchname", "ชื่อสาขา"]) }));
+      const hasId = rawRows.some((row) => Object.keys(row).some((key) => ["id", "branch id", "branchid", "รหัสสาขา"].includes(String(key).trim().toLowerCase())));
+      const hasName = rawRows.some((row) => Object.keys(row).some((key) => ["name", "branch name", "branchname", "ชื่อสาขา"].includes(String(key).trim().toLowerCase())));
+      if (!hasId || !hasName) return showMessage("ไฟล์ต้องมีคอลัมน์ ID และ Name", true);
+      renderBranchImportPreview(rows);
+    } catch { showMessage("ไม่สามารถอ่านไฟล์ Excel ได้", true); }
+  });
+}
+
+function spreadsheetValue(row, aliases) { const key = Object.keys(row).find((column) => aliases.includes(String(column).trim().toLowerCase())); return key === undefined ? "" : row[key]; }
+
+function renderBranchImportPreview(rows) {
+  const preview = document.querySelector("#branch-import-preview"); const sample = rows.slice(0, 8); preview.className = "";
+  preview.innerHTML = `<div class="notice"><b>พบ ${rows.length.toLocaleString("th-TH")} สาขา</b><br>ตรวจสอบตัวอย่างก่อนยืนยันนำเข้า</div><div class="table-wrap import-preview-table"><table class="table"><thead><tr><th>ID</th><th>Name</th></tr></thead><tbody>${sample.map((row) => `<tr><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.name)}</td></tr>`).join("")}</tbody></table></div><button class="btn btn-primary" id="confirm-branch-import">ยืนยันนำเข้า ${rows.length.toLocaleString("th-TH")} สาขา</button>`;
+  preview.querySelector("#confirm-branch-import").onclick = async () => {
+    const button = preview.querySelector("#confirm-branch-import"); button.disabled = true; button.textContent = "กำลังนำเข้า...";
+    try {
+      const result = await api("/api/branches/import", { method: "POST", body: JSON.stringify({ rows }) });
+      showMessage(`นำเข้าสำเร็จ ${result.total.toLocaleString("th-TH")} สาขา: เพิ่มใหม่ ${result.inserted.toLocaleString("th-TH")} · อัปเดต ${result.updated.toLocaleString("th-TH")} · เปิดใช้ใหม่ ${result.reactivated.toLocaleString("th-TH")}`);
+      button.textContent = "นำเข้าสำเร็จแล้ว";
+    } catch (error) { button.disabled = false; button.textContent = `ยืนยันนำเข้า ${rows.length.toLocaleString("th-TH")} สาขา`; showMessage(error.message, true); }
+  };
 }
 
 function branchDialog(branch) {
