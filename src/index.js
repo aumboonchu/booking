@@ -59,6 +59,7 @@ async function route(request, env, url) {
 
   if (pathname === "/api/admin/summary" && request.method === "GET") return summary(env, user);
   if (pathname === "/api/admin/orders" && request.method === "GET") return listAdminOrders(env, user);
+  if (pathname === "/api/admin/orders/export" && request.method === "GET") return listAdminExportRows(env, user);
   const adminOrderMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)$/);
   if (adminOrderMatch && request.method === "GET") return getAdminOrder(env, user, decodeURIComponent(adminOrderMatch[1]));
   const allocationMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/allocation$/);
@@ -325,6 +326,19 @@ async function listAdminOrders(env, user) {
     FROM demand_requests d JOIN branches b ON b.id = d.branch_id JOIN demand_items di ON di.request_id = d.id
     GROUP BY d.id ORDER BY CASE d.status WHEN 'PENDING' THEN 0 WHEN 'PARTIAL' THEN 1 WHEN 'ALLOCATED' THEN 2 ELSE 3 END, d.created_at ASC`).all();
   return json({ orders: results });
+}
+
+async function listAdminExportRows(env, user) {
+  requireAdmin(user);
+  const { results } = await env.DB.prepare(`SELECT d.id AS request_id, d.created_at, d.customer_name, d.status,
+    d.note, d.admin_note, d.allocated_at, d.sent_at, d.branch_id, b.name AS branch_name,
+    di.part_id, di.part_name_snapshot, di.sell_price_snapshot, di.requested_quantity, di.allocated_quantity,
+    au.display_name AS allocated_by_name, su.display_name AS sent_by_name
+    FROM demand_requests d JOIN branches b ON b.id = d.branch_id
+    JOIN demand_items di ON di.request_id = d.id
+    LEFT JOIN users au ON au.id = d.allocated_by LEFT JOIN users su ON su.id = d.sent_by
+    ORDER BY d.created_at DESC, d.id, di.part_name_snapshot`).all();
+  return json({ rows: results });
 }
 
 async function getAdminOrder(env, user, orderId) {
