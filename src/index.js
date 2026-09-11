@@ -272,12 +272,25 @@ async function createOrder(request, env, user) {
 async function listOrders(env, user) {
   const conditions = user.role === "BRANCH" ? "WHERE d.branch_id = ?" : "";
   const statement = env.DB.prepare(`SELECT d.*, b.name AS branch_name,
-    SUM(di.requested_quantity) AS requested_total, SUM(di.allocated_quantity) AS allocated_total,
-    GROUP_CONCAT(di.part_name_snapshot || ' ×' || di.requested_quantity, ', ') AS item_summary
+    di.id AS item_id, di.part_id, di.part_name_snapshot, di.requested_quantity, di.allocated_quantity
     FROM demand_requests d JOIN branches b ON b.id = d.branch_id JOIN demand_items di ON di.request_id = d.id
-    ${conditions} GROUP BY d.id ORDER BY d.created_at DESC`);
+    ${conditions} ORDER BY d.created_at DESC, d.id, di.part_name_snapshot`);
   const { results } = user.role === "BRANCH" ? await statement.bind(user.branch_id).all() : await statement.all();
-  return json({ orders: results });
+  const orders = []; const byId = new Map();
+  for (const row of results) {
+    let order = byId.get(row.id);
+    if (!order) {
+      order = { id: row.id, branch_id: row.branch_id, branch_name: row.branch_name, customer_name: row.customer_name,
+        status: row.status, note: row.note, admin_note: row.admin_note, created_at: row.created_at,
+        allocated_at: row.allocated_at, sent_at: row.sent_at, requested_total: 0, allocated_total: 0, items: [] };
+      byId.set(row.id, order); orders.push(order);
+    }
+    const item = { id: row.item_id, part_id: row.part_id, part_name_snapshot: row.part_name_snapshot,
+      requested_quantity: Number(row.requested_quantity), allocated_quantity: Number(row.allocated_quantity) };
+    order.items.push(item); order.requested_total += item.requested_quantity; order.allocated_total += item.allocated_quantity;
+  }
+  for (const order of orders) order.item_summary = order.items.map((item) => `${item.part_name_snapshot} ×${item.requested_quantity}`).join(", ");
+  return json({ orders });
 }
 
 async function getOrder(env, user, orderId) {
