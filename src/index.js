@@ -152,7 +152,7 @@ async function branchAccessHistory(env, user, branchId) {
     WHERE b.id = ? AND b.status != 'REMOVED'`).bind(id).first();
   if (!branch) throw new AppError(404, "ไม่พบสาขา");
   const { results: sessions } = await env.DB.prepare(`SELECT s.created_at, s.last_seen_at, s.logged_out_at, s.expires_at,
-    s.ip_address, s.country, s.user_agent,
+    s.ip_address, s.province, s.district, s.user_agent,
     CASE WHEN s.logged_out_at IS NULL AND datetime(s.expires_at) > datetime('now')
       AND COALESCE(s.last_seen_at, s.created_at) >= datetime('now', '-15 minutes') THEN 1 ELSE 0 END AS is_online
     FROM sessions s JOIN users u ON u.id = s.user_id
@@ -568,7 +568,7 @@ async function createLoginResponse(request, env, user) {
   const token = crypto.randomUUID() + crypto.randomUUID();
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 1000).toISOString();
   const access = clientAccess(request);
-  await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, ip_address, country, user_agent, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)").bind(await sha256(token), user.id, expiresAt, access.ipAddress, access.country, access.userAgent).run();
+  await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, ip_address, country, province, district, user_agent, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)").bind(await sha256(token), user.id, expiresAt, access.ipAddress, access.country, access.province, access.district, access.userAgent).run();
   await audit(env, user, "LOGIN", "USER", user.id, null);
   return json({ user: publicUser(user) }, 200, { "set-cookie": sessionCookie(token, new URL(request.url).protocol === "https:") });
 }
@@ -585,7 +585,7 @@ function cleanText(value, max) { return typeof value === "string" || typeof valu
 async function bodyJson(request) { const length = Number(request.headers.get("content-length") || 0); if (length > 1_000_000) throw new AppError(413, "ข้อมูลมีขนาดใหญ่เกินไป"); try { return await request.json(); } catch { throw new AppError(400, "รูปแบบข้อมูลไม่ถูกต้อง"); } }
 function json(data, status = 200, headers = {}) { return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...headers } }); }
 function cookie(request, name) { return request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1); }
-function clientAccess(request) { return { ipAddress: cleanText(request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for")?.split(",")[0], 80) || null, country: cleanText(request.headers.get("CF-IPCountry"), 8) || null, userAgent: cleanText(request.headers.get("user-agent"), 500) || null }; }
+function clientAccess(request) { const cf = request.cf || {}; return { ipAddress: cleanText(request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for")?.split(",")[0], 80) || null, country: cleanText(request.headers.get("CF-IPCountry"), 8) || null, province: cleanText(cf.region, 120) || null, district: cleanText(cf.city, 120) || null, userAgent: cleanText(request.headers.get("user-agent"), 500) || null }; }
 function sessionCookie(token, secure) { return `jib_session=${token}; Path=/; HttpOnly;${secure ? " Secure;" : ""} SameSite=Lax; Max-Age=${SESSION_DAYS}`; }
 function expireCookie() { return "jib_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"; }
 function corsHeaders(request) { const origin = request.headers.get("origin"); return origin && origin === new URL(request.url).origin ? { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", "access-control-allow-headers": "content-type", "access-control-allow-methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS", vary: "origin" } : {}; }
