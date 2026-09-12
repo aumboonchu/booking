@@ -124,7 +124,8 @@ async function currentUser(request, env) {
     FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN branches b ON b.id = u.branch_id
     WHERE s.token_hash = ? AND s.logged_out_at IS NULL AND datetime(s.expires_at) > datetime('now') AND u.active = 1`).bind(tokenHash).first();
   if (!user) throw new AppError(401, "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
-  await env.DB.prepare("UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?").bind(tokenHash).run();
+  const access = clientAccess(request);
+  await env.DB.prepare("UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP, network_asn = COALESCE(network_asn, ?), network_isp = COALESCE(network_isp, ?) WHERE token_hash = ?").bind(access.networkAsn, access.networkIsp, tokenHash).run();
   return user;
 }
 
