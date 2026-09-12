@@ -130,7 +130,16 @@ async function currentUser(request, env) {
 
 async function listBranches(env, user) {
   requireAdmin(user);
-  const { results } = await env.DB.prepare("SELECT b.id, b.name, b.status, u.username FROM branches b LEFT JOIN users u ON u.branch_id = b.id WHERE b.status != 'REMOVED' ORDER BY b.id").all();
+  const { results } = await env.DB.prepare(`SELECT b.id, b.name, b.status, u.username,
+    MAX(CASE WHEN s.logged_out_at IS NULL AND datetime(s.expires_at) > datetime('now')
+      AND COALESCE(s.last_seen_at, s.created_at) >= datetime('now', '-15 minutes') THEN 1 ELSE 0 END) AS is_online,
+    MAX(COALESCE(s.last_seen_at, s.created_at)) AS last_access_at
+    FROM branches b
+    LEFT JOIN users u ON u.branch_id = b.id AND u.role = 'BRANCH'
+    LEFT JOIN sessions s ON s.user_id = u.id
+    WHERE b.status != 'REMOVED'
+    GROUP BY b.id, b.name, b.status, u.username
+    ORDER BY b.id`).all();
   return json({ branches: results });
 }
 
