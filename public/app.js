@@ -172,13 +172,39 @@ function renderImportPreview(rows) {
   preview.querySelector("#confirm-import").onclick = async () => { try { const result = await api("/api/parts/import", { method: "POST", body: JSON.stringify({ rows }) }); showMessage(`นำเข้าสำเร็จ: เพิ่มใหม่ ${result.inserted} รายการ, อัปเดต ${result.updated} รายการ`); preview.querySelector("#confirm-import").disabled = true; } catch (error) { showMessage(error.message, true); } };
 }
 
+function catalogDisplayName(item) { return String(item.name || "").replace(/^[A-Z0-9]+-Apple\s+/i, "").replace(/\s+1-Y$/i, "").trim(); }
+function catalogGroup(item) { const name = catalogDisplayName(item); if (/iPhone\s+18\s+Pro\s+Max/i.test(name)) return "iPhone 18 Pro Max"; if (/iPhone\s+18\s+Pro/i.test(name)) return "iPhone 18 Pro"; return "สินค้าอื่น ๆ"; }
+function catalogStorage(item) { return catalogDisplayName(item).match(/\b(\d+)\s*(GB|TB)\b/i)?.[0].replace(/\s+/g, "") || ""; }
+function catalogStorageOrder(item) { const match = catalogStorage(item).match(/(\d+)(GB|TB)/i); if (!match) return Number.MAX_SAFE_INTEGER; return Number(match[1]) * (match[2].toUpperCase() === "TB" ? 1024 : 1); }
+
 async function renderCatalog() {
   const { items } = await api("/api/catalog"); state.catalog = items;
-  app.innerHTML = shell(`<section class="page-header"><div><h1>แจ้งความต้องการสินค้า</h1><p>เลือกรุ่นและระบุจำนวนที่ลูกค้าต้องการ โดยไม่มีการจำกัดโควต้า</p></div><button class="btn btn-outline branch-orders-action" data-page="orders">รายการของฉัน</button></section><section class="toolbar"><label class="field">ค้นหารุ่นสินค้า<input id="catalog-search" placeholder="รหัส Part หรือชื่อรุ่น" /></label></section><section class="product-list" id="catalog-body"></section><section class="cart" id="cart"></section>`);
-  const draw = () => { const search = document.querySelector("#catalog-search").value.toLowerCase(); const rows = items.filter((item) => `${item.id} ${item.name}`.toLowerCase().includes(search)); document.querySelector("#catalog-body").innerHTML = rows.length ? rows.map((item) => { const qty = state.cart.get(item.id)?.quantity || 0; return `<article class="product-card"><div><span class="part">${escapeHtml(item.id)}</span><h2>${escapeHtml(item.name)}</h2></div><div class="product-meta"><span>ราคาขายอ้างอิง</span><b>${money.format(item.sell_price)}</b></div><div class="product-quantity"><span>จำนวนที่ต้องการ</span><span class="qty"><button data-qty="-1" data-part="${escapeHtml(item.id)}" aria-label="ลดจำนวน ${escapeHtml(item.name)}">−</button><strong>${qty}</strong><button data-qty="1" data-part="${escapeHtml(item.id)}" aria-label="เพิ่มจำนวน ${escapeHtml(item.name)}">+</button></span></div></article>`; }).join("") : `<section class="panel empty">ยังไม่มีสินค้าที่เปิดรับแจ้งความต้องการ</section>`; document.querySelectorAll("[data-qty]").forEach((button) => button.onclick = () => changeCart(button.dataset.part, Number(button.dataset.qty))); drawCart(); };
-  const drawCart = () => { const entries = [...state.cart.values()]; const total = entries.reduce((sum, item) => sum + item.quantity, 0); document.querySelector("#cart").innerHTML = total ? `<div><b>${entries.length} รุ่น / ${total} เครื่อง</b><small>ระบุชื่อลูกค้าในขั้นตอนถัดไป</small></div><button class="btn btn-primary" id="checkout">ตรวจสอบและส่ง</button>` : `<div><b>ยังไม่ได้เลือกรุ่นสินค้า</b><small>กด + เพื่อระบุจำนวนที่ลูกค้าต้องการ</small></div>`; document.querySelector("#checkout")?.addEventListener("click", checkoutDialog); };
-  window.changeCart = (partId, delta) => { const item = items.find((entry) => entry.id === partId); const next = (state.cart.get(partId)?.quantity || 0) + delta; if (next <= 0) state.cart.delete(partId); else state.cart.set(partId, { ...item, quantity: next }); draw(); };
-  draw(); document.querySelector("#catalog-search").addEventListener("input", draw);
+  const groups = [...new Set(items.map(catalogGroup))].sort((left, right) => (left === "สินค้าอื่น ๆ") - (right === "สินค้าอื่น ๆ") || left.localeCompare(right));
+  app.innerHTML = shell(`<section class="catalog-page"><section class="catalog-controls"><div class="catalog-tabs" role="tablist" aria-label="กลุ่มสินค้า"><button class="active" data-catalog-filter="all">ทั้งหมด</button>${groups.map((group) => `<button data-catalog-filter="${escapeHtml(group)}">${escapeHtml(group)}</button>`).join("")}</div><label class="catalog-search"><img src="/assets/figma-search-real.svg" alt="" /><input id="catalog-search" placeholder="ค้นหาด้วยรหัส Part หรือรุ่น..." /></label></section><section class="catalog-groups" id="catalog-body"></section><section class="cart catalog-cart" id="cart"></section></section>`);
+  let filter = "all";
+  const changeCart = (partId, delta) => { const item = items.find((entry) => entry.id === partId); const next = (state.cart.get(partId)?.quantity || 0) + delta; if (next <= 0) state.cart.delete(partId); else state.cart.set(partId, { ...item, quantity: next }); draw(); };
+  const drawCart = () => {
+    const entries = [...state.cart.values()]; const total = entries.reduce((sum, item) => sum + item.quantity, 0);
+    document.querySelector("#cart").innerHTML = `<div class="catalog-cart-summary"><span class="catalog-cart-count">${total}</span><b>${total ? `เลือกสินค้าแล้ว ${total.toLocaleString("th-TH")} เครื่อง` : "ยังไม่ได้เลือกสินค้าเพิ่มความต้องการ"}</b></div><div class="catalog-cart-actions"><button class="btn btn-primary" id="catalog-orders">รายการของฉัน</button>${total ? `<button class="btn btn-light" id="checkout">ส่งความต้องการ</button>` : ""}</div>`;
+    document.querySelector("#catalog-orders").onclick = async () => { state.page = "orders"; await renderApp(); };
+    document.querySelector("#checkout")?.addEventListener("click", checkoutDialog);
+  };
+  const productCard = (item) => {
+    const quantity = state.cart.get(item.id)?.quantity || 0; const name = catalogDisplayName(item); const storage = catalogStorage(item);
+    return `<article class="product-card catalog-product-card"><div class="catalog-product-top"><span class="part">${escapeHtml(item.id)}</span>${storage ? `<span class="storage-badge">${escapeHtml(storage)}</span>` : ""}</div><h2>${escapeHtml(name)}</h2><b class="catalog-price">${money.format(item.sell_price)}</b><footer class="catalog-product-actions"><span class="qty"><button type="button" data-qty="-1" data-part="${escapeHtml(item.id)}" aria-label="ลดจำนวน ${escapeHtml(name)}">−</button><strong>${quantity}</strong><button type="button" data-qty="1" data-part="${escapeHtml(item.id)}" aria-label="เพิ่มจำนวน ${escapeHtml(name)}">+</button></span><button class="catalog-add" type="button" data-add-demand="${escapeHtml(item.id)}">＋ เพิ่มความต้องการ</button></footer></article>`;
+  };
+  const draw = () => {
+    const search = document.querySelector("#catalog-search").value.trim().toLowerCase();
+    const rows = items.filter((item) => (filter === "all" || catalogGroup(item) === filter) && `${item.id} ${item.name}`.toLowerCase().includes(search));
+    const content = groups.map((group) => [group, rows.filter((item) => catalogGroup(item) === group).sort((left, right) => catalogStorageOrder(left) - catalogStorageOrder(right) || catalogDisplayName(left).localeCompare(catalogDisplayName(right)))]).filter(([, products]) => products.length);
+    document.querySelector("#catalog-body").innerHTML = content.length ? content.map(([group, products]) => `<section class="catalog-group"><header class="catalog-group-header"><h2>${escapeHtml(group)} <span>${products.length.toLocaleString("th-TH")} รุ่น</span></h2><small>เรียงลำดับจาก 256GB → 512GB → 1TB</small></header><div class="product-list catalog-product-list">${products.map(productCard).join("")}</div></section>`).join("") : `<section class="panel empty">ไม่พบสินค้าที่ค้นหา</section>`;
+    document.querySelectorAll("[data-qty]").forEach((button) => button.onclick = () => changeCart(button.dataset.part, Number(button.dataset.qty)));
+    document.querySelectorAll("[data-add-demand]").forEach((button) => button.onclick = () => changeCart(button.dataset.addDemand, 1));
+    drawCart();
+  };
+  document.querySelectorAll("[data-catalog-filter]").forEach((button) => button.onclick = () => { filter = button.dataset.catalogFilter; document.querySelectorAll("[data-catalog-filter]").forEach((tab) => tab.classList.toggle("active", tab === button)); draw(); });
+  document.querySelector("#catalog-search").addEventListener("input", draw);
+  draw();
 }
 
 function checkoutDialog() {
