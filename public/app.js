@@ -191,7 +191,7 @@ async function renderCatalog() {
   };
   const productCard = (item) => {
     const quantity = state.cart.get(item.id)?.quantity || 0; const name = catalogDisplayName(item); const storage = catalogStorage(item);
-    return `<article class="product-card catalog-product-card"><div class="catalog-product-top"><span class="part">${escapeHtml(item.id)}</span>${storage ? `<span class="storage-badge">${escapeHtml(storage)}</span>` : ""}</div><h2>${escapeHtml(name)}</h2><b class="catalog-price">${money.format(item.sell_price)}</b><footer class="catalog-product-actions"><span class="qty"><button type="button" data-qty="-1" data-part="${escapeHtml(item.id)}" aria-label="ลดจำนวน ${escapeHtml(name)}">−</button><strong>${quantity}</strong><button type="button" data-qty="1" data-part="${escapeHtml(item.id)}" aria-label="เพิ่มจำนวน ${escapeHtml(name)}">+</button></span><button class="catalog-add" type="button" data-add-demand="${escapeHtml(item.id)}">＋ เพิ่มความต้องการ</button></footer></article>`;
+    return `<article class="product-card catalog-product-card"><div class="catalog-product-top"><span class="part">${escapeHtml(item.id)}</span>${storage ? `<span class="storage-badge">${escapeHtml(storage)}</span>` : ""}</div><h2>${escapeHtml(name)}</h2><b class="catalog-price">${money.format(item.sell_price)}</b><footer class="catalog-product-actions"><span class="catalog-demand-label">จำนวนที่ต้องการ</span><span class="qty"><button type="button" data-qty="-1" data-part="${escapeHtml(item.id)}" aria-label="ลดจำนวน ${escapeHtml(name)}">−</button><strong>${quantity}</strong><button type="button" data-qty="1" data-part="${escapeHtml(item.id)}" aria-label="เพิ่มจำนวน ${escapeHtml(name)}">+</button></span></footer></article>`;
   };
   const draw = () => {
     const search = document.querySelector("#catalog-search").value.trim().toLowerCase();
@@ -199,7 +199,6 @@ async function renderCatalog() {
     const content = groups.map((group) => [group, rows.filter((item) => catalogGroup(item) === group).sort((left, right) => catalogStorageOrder(left) - catalogStorageOrder(right) || catalogDisplayName(left).localeCompare(catalogDisplayName(right)))]).filter(([, products]) => products.length);
     document.querySelector("#catalog-body").innerHTML = content.length ? content.map(([group, products]) => `<section class="catalog-group"><header class="catalog-group-header"><h2>${escapeHtml(group)} <span>${products.length.toLocaleString("th-TH")} รุ่น</span></h2><small>เรียงลำดับจาก 256GB → 512GB → 1TB</small></header><div class="product-list catalog-product-list">${products.map(productCard).join("")}</div></section>`).join("") : `<section class="panel empty">ไม่พบสินค้าที่ค้นหา</section>`;
     document.querySelectorAll("[data-qty]").forEach((button) => button.onclick = () => changeCart(button.dataset.part, Number(button.dataset.qty)));
-    document.querySelectorAll("[data-add-demand]").forEach((button) => button.onclick = () => changeCart(button.dataset.addDemand, 1));
     drawCart();
   };
   document.querySelectorAll("[data-catalog-filter]").forEach((button) => button.onclick = () => { filter = button.dataset.catalogFilter; document.querySelectorAll("[data-catalog-filter]").forEach((tab) => tab.classList.toggle("active", tab === button)); draw(); });
