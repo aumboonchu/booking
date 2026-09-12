@@ -30,7 +30,7 @@ function renderLogin() {
 
 function shell(content) {
   const isAdmin = state.user.role === "ADMIN";
-  const nav = isAdmin ? [["dashboard", "ภาพรวม"], ["branches", "ข้อมูลสาขา"], ["parts", "จัดการ Part"], ["admin-orders", "ความต้องการและจัดสรร"], ["import", "นำเข้า Excel"]] : [["catalog", "แจ้งความต้องการ"], ["orders", "รายการของฉัน"]];
+  const nav = isAdmin ? [["dashboard", "ภาพรวม"], ["branches", "ข้อมูลสาขา"], ["parts", "จัดการ Part"], ["admin-orders", "ความต้องการและจัดสรร"]] : [["catalog", "แจ้งความต้องการ"], ["orders", "รายการของฉัน"]];
   return `<div class="shell"><aside class="sidebar"><div class="brand">JIB<small>DEMAND PORTAL</small></div><nav class="nav">${nav.map(([id, label]) => `<button class="${state.page === id ? "active" : ""}" data-page="${id}">${label}</button>`).join("")}</nav><div class="sidebar-foot">${isAdmin ? "ผู้ดูแลระบบส่วนกลาง" : `สาขา ${state.user.branchId}<br>${escapeHtml(state.user.branchName)}`}</div></aside><main class="main ${isAdmin && state.page === "admin-orders" ? "report-main" : ""}"><div class="topbar"><span class="context">${isAdmin ? "WORKSPACE / ส่วนกลาง" : `สาขา ${state.user.branchId} / ${escapeHtml(state.user.branchName)}`}</span><button class="btn btn-outline btn-small" id="logout">ออกจากระบบ</button></div><div data-flash></div>${content}</main></div>`;
 }
 
