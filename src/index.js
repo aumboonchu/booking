@@ -151,15 +151,14 @@ async function branchAccessHistory(env, user, branchId) {
     FROM branches b LEFT JOIN users u ON u.branch_id = b.id AND u.role = 'BRANCH'
     WHERE b.id = ? AND b.status != 'REMOVED'`).bind(id).first();
   if (!branch) throw new AppError(404, "ไม่พบสาขา");
-  const { results: sessions } = await env.DB.prepare(`SELECT s.token_hash, s.created_at, s.last_seen_at, s.logged_out_at, s.expires_at,
+  const { results: sessions } = await env.DB.prepare(`SELECT s.created_at, s.last_seen_at, s.logged_out_at, s.expires_at,
     s.ip_address, s.province, s.district, s.user_agent,
     CASE WHEN s.logged_out_at IS NULL AND datetime(s.expires_at) > datetime('now')
       AND COALESCE(s.last_seen_at, s.created_at) >= datetime('now', '-15 minutes') THEN 1 ELSE 0 END AS is_online
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE u.branch_id = ? AND u.role = 'BRANCH'
     ORDER BY s.created_at DESC LIMIT 30`).bind(id).all();
-  await backfillSessionLocations(env, sessions);
-  return json({ branch, sessions: sessions.map(({ token_hash, ...session }) => session) });
+  return json({ branch, sessions });
 }
 
 async function createBranch(request, env, user) {
@@ -568,7 +567,7 @@ function userInsertStatement(env, username, displayName, role, branchId, credent
 async function createLoginResponse(request, env, user) {
   const token = crypto.randomUUID() + crypto.randomUUID();
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 1000).toISOString();
-  const access = await clientAccess(request);
+  const access = clientAccess(request);
   await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, ip_address, country, province, district, user_agent, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)").bind(await sha256(token), user.id, expiresAt, access.ipAddress, access.country, access.province, access.district, access.userAgent).run();
   await audit(env, user, "LOGIN", "USER", user.id, null);
   return json({ user: publicUser(user) }, 200, { "set-cookie": sessionCookie(token, new URL(request.url).protocol === "https:") });
@@ -586,51 +585,7 @@ function cleanText(value, max) { return typeof value === "string" || typeof valu
 async function bodyJson(request) { const length = Number(request.headers.get("content-length") || 0); if (length > 1_000_000) throw new AppError(413, "ข้อมูลมีขนาดใหญ่เกินไป"); try { return await request.json(); } catch { throw new AppError(400, "รูปแบบข้อมูลไม่ถูกต้อง"); } }
 function json(data, status = 200, headers = {}) { return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...headers } }); }
 function cookie(request, name) { return request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1); }
-async function clientAccess(request) {
-  const cf = request.cf || {};
-  const ipAddress = cleanText(request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for")?.split(",")[0], 80) || null;
-  let province = cleanText(cf.region || cf.regionCode, 120) || null;
-  let district = cleanText(cf.city, 120) || null;
-  if ((!province || !district) && ipAddress) {
-    const location = await lookupLocationByIp(ipAddress);
-    province ||= location?.province || null;
-    district ||= location?.district || null;
-  }
-  return { ipAddress, country: cleanText(cf.country || request.headers.get("CF-IPCountry"), 8) || null, province, district, userAgent: cleanText(request.headers.get("user-agent"), 500) || null };
-}
-
-async function backfillSessionLocations(env, sessions) {
-  const incomplete = sessions.filter((session) => session.ip_address && (!session.province || !session.district));
-  if (!incomplete.length) return;
-  const locations = await Promise.all(incomplete.map(async (session) => ({ session, location: await lookupLocationByIp(session.ip_address) })));
-  const statements = [];
-  for (const { session, location } of locations) {
-    if (!location) continue;
-    session.province ||= location.province || null;
-    session.district ||= location.district || null;
-    statements.push(env.DB.prepare("UPDATE sessions SET province = COALESCE(province, ?), district = COALESCE(district, ?) WHERE token_hash = ?").bind(location.province || null, location.district || null, session.token_hash));
-  }
-  if (statements.length) await env.DB.batch(statements);
-}
-
-async function lookupLocationByIp(ipAddress) {
-  if (!isPublicIp(ipAddress)) return null;
-  try {
-    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ipAddress)}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(6000) });
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (data?.success === false) return null;
-    const province = cleanText(data?.region, 120) || null;
-    const district = cleanText(data?.city, 120) || null;
-    return province || district ? { province, district } : null;
-  } catch { return null; }
-}
-
-function isPublicIp(value) {
-  const ip = String(value || "").trim().toLowerCase();
-  if (!ip || ip === "::1" || ip === "localhost" || ip.startsWith("127.") || ip.startsWith("10.") || ip.startsWith("192.168.") || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) return false;
-  return !ip.startsWith("fc") && !ip.startsWith("fd") && !ip.startsWith("fe80:");
-}
+function clientAccess(request) { const cf = request.cf || {}; return { ipAddress: cleanText(request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for")?.split(",")[0], 80) || null, country: cleanText(cf.country || request.headers.get("CF-IPCountry"), 8) || null, province: cleanText(cf.region || cf.regionCode, 120) || null, district: cleanText(cf.city, 120) || null, userAgent: cleanText(request.headers.get("user-agent"), 500) || null }; }
 function sessionCookie(token, secure) { return `jib_session=${token}; Path=/; HttpOnly;${secure ? " Secure;" : ""} SameSite=Lax; Max-Age=${SESSION_DAYS}`; }
 function expireCookie() { return "jib_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"; }
 function corsHeaders(request) { const origin = request.headers.get("origin"); return origin && origin === new URL(request.url).origin ? { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", "access-control-allow-headers": "content-type", "access-control-allow-methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS", vary: "origin" } : {}; }
