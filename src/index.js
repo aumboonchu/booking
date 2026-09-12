@@ -616,7 +616,7 @@ async function backfillSessionLocations(env, sessions) {
 async function lookupLocationByIp(ipAddress) {
   if (!isPublicIp(ipAddress)) return null;
   try {
-    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ipAddress)}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(1800) });
+    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ipAddress)}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(6000) });
     if (!response.ok) return null;
     const data = await response.json();
     if (data?.success === false) return null;
