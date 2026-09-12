@@ -51,6 +51,8 @@ async function route(request, env, url) {
   if (branchSuspendMatch && request.method === "POST") return suspendBranch(env, user, decodeURIComponent(branchSuspendMatch[1]));
   const branchResumeMatch = pathname.match(/^\/api\/branches\/([^/]+)\/resume$/);
   if (branchResumeMatch && request.method === "POST") return resumeBranch(env, user, decodeURIComponent(branchResumeMatch[1]));
+  const branchAccessHistoryMatch = pathname.match(/^\/api\/branches\/([^/]+)\/access-history$/);
+  if (branchAccessHistoryMatch && request.method === "GET") return branchAccessHistory(env, user, decodeURIComponent(branchAccessHistoryMatch[1]));
   const branchMatch = pathname.match(/^\/api\/branches\/([^/]+)$/);
   if (branchMatch && request.method === "PATCH") return updateBranch(request, env, user, decodeURIComponent(branchMatch[1]));
   if (branchMatch && request.method === "DELETE") return removeBranch(env, user, decodeURIComponent(branchMatch[1]));
@@ -110,17 +112,19 @@ async function changePassword(request, env, user) {
 
 async function logout(request, env) {
   const token = cookie(request, "jib_session");
-  if (token) await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run();
+  if (token) await env.DB.prepare("UPDATE sessions SET logged_out_at = CURRENT_TIMESTAMP, last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ? AND logged_out_at IS NULL").bind(await sha256(token)).run();
   return json({ ok: true }, 200, { "set-cookie": expireCookie() });
 }
 
 async function currentUser(request, env) {
   const token = cookie(request, "jib_session");
   if (!token) throw new AppError(401, "กรุณาเข้าสู่ระบบ");
+  const tokenHash = await sha256(token);
   const user = await env.DB.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.branch_id, u.must_change_password, b.name AS branch_name
     FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN branches b ON b.id = u.branch_id
-    WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1`).bind(await sha256(token)).first();
+    WHERE s.token_hash = ? AND s.logged_out_at IS NULL AND datetime(s.expires_at) > datetime('now') AND u.active = 1`).bind(tokenHash).first();
   if (!user) throw new AppError(401, "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+  await env.DB.prepare("UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?").bind(tokenHash).run();
   return user;
 }
 
@@ -128,6 +132,24 @@ async function listBranches(env, user) {
   requireAdmin(user);
   const { results } = await env.DB.prepare("SELECT b.id, b.name, b.status, u.username FROM branches b LEFT JOIN users u ON u.branch_id = b.id WHERE b.status != 'REMOVED' ORDER BY b.id").all();
   return json({ branches: results });
+}
+
+async function branchAccessHistory(env, user, branchId) {
+  requireAdmin(user);
+  const id = Number(branchId);
+  if (!Number.isSafeInteger(id)) throw new AppError(404, "ไม่พบสาขา");
+  const branch = await env.DB.prepare(`SELECT b.id, b.name, b.status, u.username
+    FROM branches b LEFT JOIN users u ON u.branch_id = b.id AND u.role = 'BRANCH'
+    WHERE b.id = ? AND b.status != 'REMOVED'`).bind(id).first();
+  if (!branch) throw new AppError(404, "ไม่พบสาขา");
+  const { results: sessions } = await env.DB.prepare(`SELECT s.created_at, s.last_seen_at, s.logged_out_at, s.expires_at,
+    s.ip_address, s.country, s.user_agent,
+    CASE WHEN s.logged_out_at IS NULL AND datetime(s.expires_at) > datetime('now')
+      AND COALESCE(s.last_seen_at, s.created_at) >= datetime('now', '-15 minutes') THEN 1 ELSE 0 END AS is_online
+    FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE u.branch_id = ? AND u.role = 'BRANCH'
+    ORDER BY s.created_at DESC LIMIT 30`).bind(id).all();
+  return json({ branch, sessions: results });
 }
 
 async function createBranch(request, env, user) {
@@ -536,7 +558,8 @@ function userInsertStatement(env, username, displayName, role, branchId, credent
 async function createLoginResponse(request, env, user) {
   const token = crypto.randomUUID() + crypto.randomUUID();
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 1000).toISOString();
-  await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)").bind(await sha256(token), user.id, expiresAt).run();
+  const access = clientAccess(request);
+  await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, ip_address, country, user_agent, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)").bind(await sha256(token), user.id, expiresAt, access.ipAddress, access.country, access.userAgent).run();
   await audit(env, user, "LOGIN", "USER", user.id, null);
   return json({ user: publicUser(user) }, 200, { "set-cookie": sessionCookie(token, new URL(request.url).protocol === "https:") });
 }
@@ -553,6 +576,7 @@ function cleanText(value, max) { return typeof value === "string" || typeof valu
 async function bodyJson(request) { const length = Number(request.headers.get("content-length") || 0); if (length > 1_000_000) throw new AppError(413, "ข้อมูลมีขนาดใหญ่เกินไป"); try { return await request.json(); } catch { throw new AppError(400, "รูปแบบข้อมูลไม่ถูกต้อง"); } }
 function json(data, status = 200, headers = {}) { return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...headers } }); }
 function cookie(request, name) { return request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1); }
+function clientAccess(request) { return { ipAddress: cleanText(request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for")?.split(",")[0], 80) || null, country: cleanText(request.headers.get("CF-IPCountry"), 8) || null, userAgent: cleanText(request.headers.get("user-agent"), 500) || null }; }
 function sessionCookie(token, secure) { return `jib_session=${token}; Path=/; HttpOnly;${secure ? " Secure;" : ""} SameSite=Lax; Max-Age=${SESSION_DAYS}`; }
 function expireCookie() { return "jib_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"; }
 function corsHeaders(request) { const origin = request.headers.get("origin"); return origin && origin === new URL(request.url).origin ? { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", "access-control-allow-headers": "content-type", "access-control-allow-methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS", vary: "origin" } : {}; }
