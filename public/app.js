@@ -58,12 +58,24 @@ async function renderDashboard() {
 
 async function renderBranches() {
   const { branches } = await api("/api/branches");
-  const counts = { all: branches.length, active: branches.filter((branch) => branch.status !== "SUSPENDED").length, suspended: branches.filter((branch) => branch.status === "SUSPENDED").length };
-  app.innerHTML = shell(`<section class="page-header branch-page-header"><div><h1>ข้อมูลสาขา</h1><p>เพิ่ม แก้ไข ระงับชั่วคราว และนำเข้าหลายสาขาผ่านไฟล์ Excel อย่างเป็นระเบียบ</p></div><div class="header-actions"><button class="btn btn-outline icon-btn" id="import-branches"><img src="/assets/figma-download-real.svg" alt="" />นำเข้า Excel</button><button class="btn btn-primary icon-btn" id="add-branch"><img src="/assets/figma-plus-real.svg" alt="" />เพิ่มสาขาใหม่</button></div></section>${branches.length ? `<section class="branch-controls"><div class="branch-tabs" role="tablist"><button class="active" data-branch-filter="all">ทั้งหมด <b>${counts.all}</b></button><button data-branch-filter="active">กำลังใช้งาน <b>${counts.active}</b></button><button data-branch-filter="suspended">ระงับชั่วคราว <b>${counts.suspended}</b></button></div><label class="branch-search"><img src="/assets/figma-search-real.svg" alt="" /><input id="branch-search" placeholder="ค้นหาชื่อสาขา, รหัสสาขา JIB..." /></label></section><section class="branch-list" id="branch-list"></section>` : `<section class="panel empty">ยังไม่มีสาขา</section>`}`);
-  let filter = "all";
+  const isOnline = (branch) => branch.status !== "SUSPENDED" && Number(branch.is_online) === 1;
+  const counts = {
+    all: branches.length,
+    active: branches.filter((branch) => branch.status !== "SUSPENDED").length,
+    suspended: branches.filter((branch) => branch.status === "SUSPENDED").length,
+    online: branches.filter(isOnline).length,
+    offline: branches.filter((branch) => !isOnline(branch) && Boolean(branch.last_access_at)).length,
+    noHistory: branches.filter((branch) => !branch.last_access_at).length
+  };
+  app.innerHTML = shell(`<section class="page-header branch-page-header"><div><h1>ข้อมูลสาขา</h1><p>เพิ่ม แก้ไข ระงับชั่วคราว และนำเข้าหลายสาขาผ่านไฟล์ Excel อย่างเป็นระเบียบ</p></div><div class="header-actions"><button class="btn btn-outline icon-btn" id="import-branches"><img src="/assets/figma-download-real.svg" alt="" />นำเข้า Excel</button><button class="btn btn-primary icon-btn" id="add-branch"><img src="/assets/figma-plus-real.svg" alt="" />เพิ่มสาขาใหม่</button></div></section>${branches.length ? `<section class="branch-controls"><div class="branch-filter-groups"><div class="branch-tabs" role="tablist" aria-label="สถานะสาขา"><button class="active" data-branch-filter="all">ทั้งหมด <b>${counts.all}</b></button><button data-branch-filter="active">กำลังใช้งาน <b>${counts.active}</b></button><button data-branch-filter="suspended">ระงับชั่วคราว <b>${counts.suspended}</b></button></div><div class="branch-activity-filters" role="tablist" aria-label="สถานะการเข้าใช้"><span>สถานะการเข้าใช้</span><button class="active" data-access-filter="all">ทั้งหมด <b>${counts.all}</b></button><button data-access-filter="online">Online <b>${counts.online}</b></button><button data-access-filter="offline">Offline <b>${counts.offline}</b></button><button data-access-filter="no-history">ยังไม่มีประวัติ <b>${counts.noHistory}</b></button></div></div><label class="branch-search"><img src="/assets/figma-search-real.svg" alt="" /><input id="branch-search" placeholder="ค้นหาชื่อสาขา, รหัสสาขา JIB..." /></label></section><section class="branch-list" id="branch-list"></section>` : `<section class="panel empty">ยังไม่มีสาขา</section>`}`);
+  let filter = "all"; let accessFilter = "all";
   const draw = () => {
     const query = document.querySelector("#branch-search")?.value.trim().toLowerCase() || "";
-    const visible = branches.filter((branch) => (filter === "all" || (filter === "suspended" ? branch.status === "SUSPENDED" : branch.status !== "SUSPENDED")) && `${branch.id} JIB${branch.id} ${branch.name}`.toLowerCase().includes(query));
+    const visible = branches.filter((branch) => {
+      const matchesBranchStatus = filter === "all" || (filter === "suspended" ? branch.status === "SUSPENDED" : branch.status !== "SUSPENDED");
+      const matchesAccessStatus = accessFilter === "all" || (accessFilter === "online" ? isOnline(branch) : accessFilter === "offline" ? !isOnline(branch) && Boolean(branch.last_access_at) : !branch.last_access_at);
+      return matchesBranchStatus && matchesAccessStatus && `${branch.id} JIB${branch.id} ${branch.name}`.toLowerCase().includes(query);
+    });
     const list = document.querySelector("#branch-list"); if (!list) return;
     list.innerHTML = visible.length ? visible.map((branch) => branchCard(branch)).join("") : `<section class="panel empty branch-empty">ไม่พบสาขาตามเงื่อนไขที่ค้นหา</section>`;
     list.querySelectorAll("[data-access-history]").forEach((button) => button.onclick = () => branchAccessHistoryDialog(button.dataset.accessHistory));
@@ -72,6 +84,7 @@ async function renderBranches() {
   document.querySelector("#add-branch").onclick = () => branchDialog();
   document.querySelector("#import-branches").onclick = async () => { state.page = "branch-import"; await renderApp(); };
   document.querySelectorAll("[data-branch-filter]").forEach((button) => button.onclick = () => { filter = button.dataset.branchFilter; document.querySelectorAll("[data-branch-filter]").forEach((tab) => tab.classList.toggle("active", tab === button)); draw(); });
+  document.querySelectorAll("[data-access-filter]").forEach((button) => button.onclick = () => { accessFilter = button.dataset.accessFilter; document.querySelectorAll("[data-access-filter]").forEach((tab) => tab.classList.toggle("active", tab === button)); draw(); });
   document.querySelector("#branch-search")?.addEventListener("input", draw);
   draw();
 }

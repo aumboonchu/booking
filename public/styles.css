@@ -45,11 +45,11 @@ input, select, textarea { width: 100%; padding: 11px 12px; border: 1px solid #d7
 .icon-btn img { width: 16px; height: 16px; }
 .btn-primary.icon-btn img { filter: brightness(0) invert(1); }
 .branch-controls { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
-.branch-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
-.branch-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 9px 15px; color: #334155; border: 1px solid transparent; border-radius: 8px; background: transparent; font-size: 14px; font-weight: 600; }
-.branch-tabs button b { padding: 2px 6px; border-radius: 4px; color: #64748b; background: #e2e8f0; font-size: 11px; }
-.branch-tabs button.active { color: #1a56db; border-color: #1a56db; background: #eff6ff; }
-.branch-tabs button.active b { color: #fff; background: #1a56db; }
+.branch-filter-groups { display: grid; gap: 8px; }.branch-tabs, .branch-activity-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.branch-tabs button, .branch-activity-filters button { display: inline-flex; align-items: center; gap: 6px; padding: 9px 15px; color: #334155; border: 1px solid transparent; border-radius: 8px; background: transparent; font-size: 14px; font-weight: 600; }
+.branch-tabs button b, .branch-activity-filters button b { padding: 2px 6px; border-radius: 4px; color: #64748b; background: #e2e8f0; font-size: 11px; }
+.branch-tabs button.active, .branch-activity-filters button.active { color: #1a56db; border-color: #1a56db; background: #eff6ff; }
+.branch-tabs button.active b, .branch-activity-filters button.active b { color: #fff; background: #1a56db; }.branch-activity-filters > span { color: #64748b; font-size: 13px; font-weight: 600; }
 .branch-search { display: flex; align-items: center; gap: 10px; width: min(100%, 320px); padding: 0 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
 .branch-search img { width: 16px; height: 16px; }
 .branch-search input { padding: 10px 0; border: 0; outline: 0; }
@@ -69,4 +69,4 @@ input, select, textarea { width: 100%; padding: 11px 12px; border: 1px solid #d7
 .branch-card-footer > b { color: #1a56db; font-size: 13px; }.btn-quiet { color: #334155; border-color: transparent; background: #f8fafc; }.branch-empty { grid-column: 1 / -1; }
 @media (max-width: 1180px) { .branch-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 820px) { .nav button img { display: none; }.branch-controls { align-items: stretch; flex-direction: column; }.branch-search { width: 100%; }.branch-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .branch-tabs { display: grid; grid-template-columns: repeat(3, 1fr); }.branch-tabs button { justify-content: center; padding: 9px 6px; font-size: 12px; }.branch-card h2 { margin: 0 0 8px; }.branch-list { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .branch-tabs, .branch-activity-filters { display: grid; grid-template-columns: repeat(3, 1fr); }.branch-tabs button, .branch-activity-filters button { justify-content: center; padding: 9px 6px; font-size: 12px; }.branch-activity-filters > span { grid-column: 1 / -1; }.branch-card h2 { margin: 0 0 8px; }.branch-list { grid-template-columns: 1fr; } }
