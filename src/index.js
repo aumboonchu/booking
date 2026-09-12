@@ -35,6 +35,7 @@ async function route(request, env, url) {
   const user = await currentUser(request, env);
   if (pathname === "/api/me" && request.method === "GET") return json({ user: publicUser(user) });
   if (pathname === "/api/change-password" && request.method === "POST") return changePassword(request, env, user);
+  if (pathname === "/api/session/device-location" && request.method === "PATCH") return updateDeviceLocation(request, env, user);
   if (user.must_change_password) throw new AppError(403, "กรุณาเปลี่ยนรหัสผ่านก่อนใช้งานระบบ");
   if (pathname === "/api/catalog" && request.method === "GET") return catalog(env);
   if (pathname === "/api/orders" && request.method === "GET") return listOrders(env, user);
@@ -153,13 +154,28 @@ async function branchAccessHistory(env, user, branchId) {
     WHERE b.id = ? AND b.status != 'REMOVED'`).bind(id).first();
   if (!branch) throw new AppError(404, "ไม่พบสาขา");
   const { results: sessions } = await env.DB.prepare(`SELECT s.created_at, s.last_seen_at, s.logged_out_at, s.expires_at,
-    s.ip_address, s.network_asn, s.network_isp, s.user_agent,
+    s.ip_address, s.province, s.district, s.network_asn, s.network_isp, s.user_agent,
+    s.device_latitude, s.device_longitude, s.device_accuracy, s.device_location_at,
     CASE WHEN s.logged_out_at IS NULL AND datetime(s.expires_at) > datetime('now')
       AND COALESCE(s.last_seen_at, s.created_at) >= datetime('now', '-15 minutes') THEN 1 ELSE 0 END AS is_online
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE u.branch_id = ? AND u.role = 'BRANCH'
     ORDER BY s.created_at DESC LIMIT 30`).bind(id).all();
   return json({ branch, sessions });
+}
+
+async function updateDeviceLocation(request, env, user) {
+  requireBranch(user);
+  const body = await bodyJson(request);
+  const latitude = Number(body.latitude);
+  const longitude = Number(body.longitude);
+  const accuracy = body.accuracy == null ? null : Number(body.accuracy);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) throw new AppError(400, "พิกัดตำแหน่งไม่ถูกต้อง");
+  if (accuracy != null && (!Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100000)) throw new AppError(400, "ค่าความแม่นยำของตำแหน่งไม่ถูกต้อง");
+  const token = cookie(request, "jib_session");
+  await env.DB.prepare("UPDATE sessions SET device_latitude = ?, device_longitude = ?, device_accuracy = ?, device_location_at = CURRENT_TIMESTAMP WHERE token_hash = ? AND user_id = ?")
+    .bind(latitude, longitude, accuracy, await sha256(token), user.id).run();
+  return json({ ok: true });
 }
 
 async function createBranch(request, env, user) {

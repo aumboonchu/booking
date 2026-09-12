@@ -1,5 +1,5 @@
 const app = document.querySelector("#app");
-const state = { user: null, page: null, cart: new Map(), catalog: [], parts: [], orders: [] };
+const state = { user: null, page: null, cart: new Map(), catalog: [], parts: [], orders: [], locationAttempted: false };
 
 const money = new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 });
 const date = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" });
@@ -22,12 +22,41 @@ function statusLabel(status) { return ({ ACTIVE: "ใช้งาน", SUSPENDED
 function badge(status) { return `<span class="badge ${String(status).toLowerCase()}">${statusLabel(status)}</span>`; }
 function flash(message, isError = false) { return `<div class="flash ${isError ? "error" : ""}">${escapeHtml(message)}</div>`; }
 function showMessage(message, isError = false) { const target = document.querySelector("[data-flash]"); if (target) target.innerHTML = flash(message, isError); else alert(message); }
+function clientCookie(name) { return document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || ""; }
+function setClientCookie(name, value, days) { document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; SameSite=Lax; Secure; Max-Age=${Math.round(days * 86400)}`; }
+
+function locationConsentDialog() {
+  return new Promise((resolve) => {
+    const modal = document.createElement("div"); modal.className = "dialog-backdrop location-consent-backdrop";
+    modal.innerHTML = `<section class="dialog location-consent-dialog" role="dialog" aria-modal="true" aria-labelledby="location-consent-title"><div class="location-consent-icon" aria-hidden="true">⌖</div><h2 id="location-consent-title">อนุญาตตำแหน่งจริงของอุปกรณ์</h2><p>ระบบจะใช้ตำแหน่งจาก Browser เพื่อช่วยส่วนกลางตรวจสอบจุดใช้งานเมื่อสาขาเชื่อมต่อผ่าน VPN และจะจำการยินยอมนี้ด้วย Cookie</p><div class="dialog-footer"><button class="btn btn-outline" type="button" data-location-deny>ยังไม่อนุญาต</button><button class="btn btn-primary" type="button" data-location-allow>อนุญาตตำแหน่ง</button></div></section>`;
+    document.body.append(modal);
+    modal.querySelector("[data-location-deny]").onclick = () => { modal.remove(); resolve(false); };
+    modal.querySelector("[data-location-allow]").onclick = () => { modal.remove(); resolve(true); };
+  });
+}
+
+async function captureDeviceLocation() {
+  if (state.locationAttempted || state.user?.role !== "BRANCH" || !navigator.geolocation) return;
+  state.locationAttempted = true;
+  let consent = decodeURIComponent(clientCookie("jib_location_consent"));
+  if (consent === "denied") return;
+  if (consent !== "granted") {
+    if (!(await locationConsentDialog())) { setClientCookie("jib_location_consent", "denied", 7); return; }
+    setClientCookie("jib_location_consent", "granted", 180);
+  }
+  navigator.geolocation.getCurrentPosition(async ({ coords }) => {
+    try { await api("/api/session/device-location", { method: "PATCH", body: JSON.stringify({ latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy }) }); }
+    catch (error) { console.error("Unable to save device location", error); }
+  }, (error) => {
+    if (error.code === error.PERMISSION_DENIED) setClientCookie("jib_location_consent", "denied", 7);
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 300000 });
+}
 
 function authShell(content) { return `<div class="auth"><aside class="brand-panel"><div><div class="brand">JIB<small>DEMAND PORTAL</small></div></div><p class="brand-note">ระบบแจ้งความต้องการสินค้า ติดตามการจัดสรร และตรวจสอบวันเวลาส่งสินค้าของแต่ละสาขา</p></aside><section class="auth-body">${content}</section></div>`; }
 
 function renderLogin() {
   app.innerHTML = authShell(`<section class="card"><h1>เข้าสู่ระบบแจ้งความต้องการสินค้า</h1><p class="muted">ใช้บัญชีที่ส่วนกลางกำหนดให้สำหรับสาขาของคุณ</p><div data-flash></div><form class="form" id="login-form"><label class="field">ชื่อผู้ใช้งาน<input name="username" required autocomplete="username" placeholder="กรอกชื่อผู้ใช้งาน" /></label><label class="field">รหัสผ่าน<input name="password" type="password" required autocomplete="current-password" /></label><button class="btn btn-primary" type="submit">เข้าสู่ระบบ</button></form></section>`);
-  document.querySelector("#login-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { const result = await api("/api/login", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) }); state.user = result.user; state.page = state.user.role === "ADMIN" ? "dashboard" : "catalog"; await renderApp(); } catch (error) { showMessage(error.message, true); } });
+  document.querySelector("#login-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { const result = await api("/api/login", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) }); state.user = result.user; state.page = state.user.role === "ADMIN" ? "dashboard" : "catalog"; state.locationAttempted = false; await renderApp(); } catch (error) { showMessage(error.message, true); } });
 }
 
 function shell(content) {
@@ -43,7 +72,8 @@ async function renderApp() {
   const renderer = pages[state.page] || (state.user.role === "ADMIN" ? renderDashboard : renderCatalog);
   await renderer();
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", async () => { state.page = button.dataset.page; await renderApp(); }));
-  document.querySelector("#logout")?.addEventListener("click", async () => { await api("/api/logout", { method: "POST" }); state.user = null; state.cart.clear(); await boot(); });
+  document.querySelector("#logout")?.addEventListener("click", async () => { await api("/api/logout", { method: "POST" }); state.user = null; state.locationAttempted = false; state.cart.clear(); await boot(); });
+  void captureDeviceLocation();
 }
 
 function renderChangePassword() {
@@ -99,7 +129,7 @@ function branchCard(branch) {
 async function branchAccessHistoryDialog(branchId) {
   try {
     const { branch, sessions } = await api(`/api/branches/${encodeURIComponent(branchId)}/access-history`); const modal = document.createElement("div"); modal.className = "dialog-backdrop";
-    modal.innerHTML = `<section class="dialog access-history-dialog"><div class="history-head"><div><small>JIB DEMAND PORTAL</small><h2>ประวัติการเข้าสู่ระบบ</h2></div><button class="history-close" type="button" data-close aria-label="ปิด">×</button></div><div class="history-branch"><b>สาขา ${escapeHtml(branch.name)}</b><span>JIB-${escapeHtml(branch.id)} · ${escapeHtml(branch.username || `JIB${branch.id}`)}</span></div>${sessions.length ? `<div class="table-wrap history-table-wrap"><table class="table history-table"><thead><tr><th>เข้าใช้ระบบ</th><th>สถานะ / ล่าสุด</th><th>ระยะเวลา</th><th>IP / Network & ISP</th><th>อุปกรณ์</th></tr></thead><tbody>${sessions.map((session) => { const network = session.network_asn || session.network_isp ? `${session.network_asn ? `AS${escapeHtml(session.network_asn)}` : "Network ไม่ทราบ"} · ${escapeHtml(session.network_isp || "ISP ไม่ทราบ")}` : "ยังไม่มีข้อมูล Network & ISP"; const location = session.district || session.province ? `อ. ${escapeHtml(session.district || "–")} · จ. ${escapeHtml(session.province || "–")}` : "ยังไม่มีข้อมูล อ. / จ."; return `<tr><td><b>${fmtDate(session.created_at)}</b></td><td><span class="session-status ${Number(session.is_online) ? "online" : "offline"}">${Number(session.is_online) ? "● Online" : "● Offline"}</span><small>${Number(session.is_online) ? `ล่าสุด ${fmtDate(session.last_seen_at || session.created_at)}` : `ออก/ล่าสุด ${fmtDate(session.logged_out_at || session.last_seen_at)}`}</small></td><td>${sessionDuration(session)}</td><td><b>${escapeHtml(session.ip_address || "–")}</b><small>${network}</small><small class="network-location">${location}</small></td><td>${escapeHtml(deviceName(session.user_agent))}</td></tr>`; }).join("")}</tbody></table></div>` : `<section class="panel empty">ยังไม่มีประวัติการเข้าสู่ระบบ</section>`}</section>`;
+    modal.innerHTML = `<section class="dialog access-history-dialog"><div class="history-head"><div><small>JIB DEMAND PORTAL</small><h2>ประวัติการเข้าสู่ระบบ</h2></div><button class="history-close" type="button" data-close aria-label="ปิด">×</button></div><div class="history-branch"><b>สาขา ${escapeHtml(branch.name)}</b><span>JIB-${escapeHtml(branch.id)} · ${escapeHtml(branch.username || `JIB${branch.id}`)}</span></div>${sessions.length ? `<div class="table-wrap history-table-wrap"><table class="table history-table"><thead><tr><th>เข้าใช้ระบบ</th><th>สถานะ / ล่าสุด</th><th>ระยะเวลา</th><th>IP / Network / ตำแหน่ง</th><th>อุปกรณ์</th></tr></thead><tbody>${sessions.map((session) => { const network = session.network_asn || session.network_isp ? `${session.network_asn ? `AS${escapeHtml(session.network_asn)}` : "Network ไม่ทราบ"} · ${escapeHtml(session.network_isp || "ISP ไม่ทราบ")}` : "ยังไม่มีข้อมูล Network & ISP"; const location = session.district || session.province ? `ตำแหน่งเครือข่าย: อ. ${escapeHtml(session.district || "–")} · จ. ${escapeHtml(session.province || "–")}` : "ยังไม่มีตำแหน่งเครือข่าย"; const hasDeviceLocation = session.device_latitude != null && session.device_longitude != null && Number.isFinite(Number(session.device_latitude)) && Number.isFinite(Number(session.device_longitude)); const latitude = Number(session.device_latitude); const longitude = Number(session.device_longitude); const accuracy = session.device_accuracy == null ? "" : ` (±${Math.round(Number(session.device_accuracy)).toLocaleString("th-TH")} ม.)`; const deviceLocation = hasDeviceLocation ? `<a class="device-location" href="https://www.google.com/maps?q=${latitude},${longitude}" target="_blank" rel="noopener noreferrer">ตำแหน่งอุปกรณ์: เปิดแผนที่${accuracy}</a>` : `<small class="device-location unavailable">ยังไม่ได้รับอนุญาตตำแหน่งอุปกรณ์</small>`; return `<tr><td><b>${fmtDate(session.created_at)}</b></td><td><span class="session-status ${Number(session.is_online) ? "online" : "offline"}">${Number(session.is_online) ? "● Online" : "● Offline"}</span><small>${Number(session.is_online) ? `ล่าสุด ${fmtDate(session.last_seen_at || session.created_at)}` : `ออก/ล่าสุด ${fmtDate(session.logged_out_at || session.last_seen_at)}`}</small></td><td>${sessionDuration(session)}</td><td><b>${escapeHtml(session.ip_address || "–")}</b><small>${network}</small><small class="network-location">${location}</small>${deviceLocation}</td><td>${escapeHtml(deviceName(session.user_agent))}</td></tr>`; }).join("")}</tbody></table></div>` : `<section class="panel empty">ยังไม่มีประวัติการเข้าสู่ระบบ</section>`}</section>`;
     document.body.append(modal); modal.querySelector("[data-close]").onclick = () => modal.remove();
   } catch (error) { showMessage(error.message, true); }
 }
@@ -305,6 +335,6 @@ async function allocationDialog(orderId) {
 }
 
 async function boot() {
-  try { const { user } = await api("/api/me"); state.user = user; state.page = user.role === "ADMIN" ? "dashboard" : "catalog"; await renderApp(); } catch (error) { if (error.message.includes("เข้าสู่ระบบ") || error.message.includes("เซสชัน")) return renderLogin(); app.innerHTML = authShell(`<section class="card"><h1>ไม่สามารถเริ่มระบบได้</h1>${flash(error.message, true)}</section>`); } }
+  try { const { user } = await api("/api/me"); state.user = user; state.page = user.role === "ADMIN" ? "dashboard" : "catalog"; state.locationAttempted = false; await renderApp(); } catch (error) { if (error.message.includes("เข้าสู่ระบบ") || error.message.includes("เซสชัน")) return renderLogin(); app.innerHTML = authShell(`<section class="card"><h1>ไม่สามารถเริ่มระบบได้</h1>${flash(error.message, true)}</section>`); } }
 
 boot();
