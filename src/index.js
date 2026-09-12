@@ -149,7 +149,7 @@ async function branchAccessHistory(env, user, branchId) {
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE u.branch_id = ? AND u.role = 'BRANCH'
     ORDER BY s.created_at DESC LIMIT 30`).bind(id).all();
-  return json({ branch, sessions: results });
+  return json({ branch, sessions });
 }
 
 async function createBranch(request, env, user) {
