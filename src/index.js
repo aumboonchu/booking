@@ -52,6 +52,8 @@ async function route(request, env, url) {
   if (branchSuspendMatch && request.method === "POST") return suspendBranch(env, user, decodeURIComponent(branchSuspendMatch[1]));
   const branchResumeMatch = pathname.match(/^\/api\/branches\/([^/]+)\/resume$/);
   if (branchResumeMatch && request.method === "POST") return resumeBranch(env, user, decodeURIComponent(branchResumeMatch[1]));
+  const branchResetPasswordMatch = pathname.match(/^\/api\/branches\/([^/]+)\/reset-password$/);
+  if (branchResetPasswordMatch && request.method === "POST") return resetBranchPassword(env, user, decodeURIComponent(branchResetPasswordMatch[1]));
   const branchAccessHistoryMatch = pathname.match(/^\/api\/branches\/([^/]+)\/access-history$/);
   if (branchAccessHistoryMatch && request.method === "GET") return branchAccessHistory(env, user, decodeURIComponent(branchAccessHistoryMatch[1]));
   const branchMatch = pathname.match(/^\/api\/branches\/([^/]+)$/);
@@ -244,6 +246,25 @@ async function resumeBranch(env, user, branchId) {
   ]);
   await audit(env, user, "RESUME", "BRANCH", String(id), { id, name: branch.name });
   return json({ resumed: true });
+}
+
+async function resetBranchPassword(env, user, branchId) {
+  requireAdmin(user);
+  const id = Number(branchId);
+  if (!Number.isSafeInteger(id) || id < 1 || id > 99999) throw new AppError(400, "รหัสสาขาไม่ถูกต้อง");
+  const branchUser = await env.DB.prepare(`SELECT u.id, u.username, b.name AS branch_name
+    FROM users u JOIN branches b ON b.id = u.branch_id
+    WHERE u.branch_id = ? AND u.role = 'BRANCH' AND b.status != 'REMOVED'
+    LIMIT 1`).bind(id).first();
+  if (!branchUser) throw new AppError(404, "ไม่พบบัญชีสาขา");
+
+  const credential = await hashPassword("1234");
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 1 WHERE id = ?").bind(credential.salt, credential.hash, branchUser.id),
+    env.DB.prepare("UPDATE sessions SET logged_out_at = CURRENT_TIMESTAMP, last_seen_at = CURRENT_TIMESTAMP WHERE user_id = ? AND logged_out_at IS NULL").bind(branchUser.id),
+  ]);
+  await audit(env, user, "RESET_PASSWORD", "BRANCH", String(id), { username: branchUser.username });
+  return json({ ok: true, username: branchUser.username });
 }
 
 async function importBranches(request, env, user) {
