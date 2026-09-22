@@ -358,4 +358,3 @@ async function boot() {
 boot();
 
 // Build 2026-09-22: preserve allocation report filters, paging, and oldest-first sorting.
-
