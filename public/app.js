@@ -1,5 +1,5 @@
 const app = document.querySelector("#app");
-const state = { user: null, page: null, cart: new Map(), catalog: [], parts: [], orders: [], locationAttempted: false };
+const state = { user: null, page: null, cart: new Map(), catalog: [], parts: [], orders: [], locationAttempted: false, adminReport: { search: "", start: "", end: "", status: "", sort: "asc", page: 1, scrollY: 0 } };
 
 const money = new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 });
 const date = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" });
@@ -262,8 +262,24 @@ async function editOrderDialog(orderId) {
 
 async function renderAdminOrders() {
   const { rows: reportRows } = await api("/api/admin/orders/export");
-  let page = 1; const pageSize = 20;
-  app.innerHTML = shell(`<section class="page-header report-header"><div><h1>รายงานความต้องการและการจัดสรร</h1><p>แสดง 1 Part ต่อ 1 บรรทัด เรียงตามวันเวลาที่แจ้ง และส่งออกข้อมูล</p></div><button class="btn btn-excel" id="export-orders"><span aria-hidden="true">▦</span> Export Excel</button></section><section class="toolbar report-toolbar"><label class="field report-search">ค้นหา<input id="admin-order-search" placeholder="ลูกค้า สาขา รุ่น Part หรือเลขที่รายการ" /></label><label class="field">วันที่เริ่มต้น<input id="admin-order-start" type="date" /></label><label class="field">วันที่สิ้นสุด<input id="admin-order-end" type="date" /></label><label class="field compact">สถานะ<select id="admin-order-status"><option value="">ทั้งหมด</option><option value="PENDING">รอจัดสรร</option><option value="PARTIAL">จัดสรรบางส่วน</option><option value="ALLOCATED">จัดสรรครบ</option><option value="SENT">ส่งสินค้าแล้ว</option><option value="CANCELLED">ยกเลิก</option></select></label><label class="field compact">เรียงตาม<select id="admin-order-sort"><option value="desc">ใหม่สุดก่อน</option><option value="asc">เก่าสุดก่อน</option></select></label></section><section class="report-summary" id="admin-report-summary"></section><section class="table-wrap report-table-wrap"><table class="table report-table"><thead><tr><th class="sticky-date"><button class="sort-heading" id="sort-request-date" type="button">วัน–เวลาที่แจ้ง <span aria-hidden="true">↓</span></button></th><th>เลขที่คำขอ</th><th>สาขา</th><th>ลูกค้า</th><th>สินค้า / Part</th><th class="number-column">ต้องการ</th><th class="number-column">จัดสรร</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="admin-report-body"></tbody></table><footer class="report-pagination" id="admin-report-pagination"></footer></section>`);
+  const reportState = state.adminReport;
+  let page = Math.max(1, Number(reportState.page) || 1); const pageSize = 20;
+  app.innerHTML = shell(`<section class="page-header report-header"><div><h1>รายงานความต้องการและการจัดสรร</h1><p>แสดง 1 Part ต่อ 1 บรรทัด เรียงตามวันเวลาที่แจ้ง และส่งออกข้อมูล</p></div><button class="btn btn-excel" id="export-orders"><span aria-hidden="true">▦</span> Export Excel</button></section><section class="toolbar report-toolbar"><label class="field report-search">ค้นหา<input id="admin-order-search" placeholder="ลูกค้า สาขา รุ่น Part หรือเลขที่รายการ" /></label><label class="field">วันที่เริ่มต้น<input id="admin-order-start" type="date" /></label><label class="field">วันที่สิ้นสุด<input id="admin-order-end" type="date" /></label><label class="field compact">สถานะ<select id="admin-order-status"><option value="">ทั้งหมด</option><option value="PENDING">รอจัดสรร</option><option value="PARTIAL">จัดสรรบางส่วน</option><option value="ALLOCATED">จัดสรรครบ</option><option value="SENT">ส่งสินค้าแล้ว</option><option value="CANCELLED">ยกเลิก</option></select></label><label class="field compact">เรียงตาม<select id="admin-order-sort"><option value="asc">เก่าสุดก่อน</option><option value="desc">ใหม่สุดก่อน</option></select></label></section><section class="report-summary" id="admin-report-summary"></section><section class="table-wrap report-table-wrap"><table class="table report-table"><thead><tr><th class="sticky-date"><button class="sort-heading" id="sort-request-date" type="button">วัน–เวลาที่แจ้ง <span aria-hidden="true">↑</span></button></th><th>เลขที่คำขอ</th><th>สาขา</th><th>ลูกค้า</th><th>สินค้า / Part</th><th class="number-column">ต้องการ</th><th class="number-column">จัดสรร</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="admin-report-body"></tbody></table><footer class="report-pagination" id="admin-report-pagination"></footer></section>`);
+
+  document.querySelector("#admin-order-search").value = reportState.search;
+  document.querySelector("#admin-order-start").value = reportState.start;
+  document.querySelector("#admin-order-end").value = reportState.end;
+  document.querySelector("#admin-order-status").value = reportState.status;
+  document.querySelector("#admin-order-sort").value = reportState.sort;
+
+  const rememberView = () => {
+    reportState.search = document.querySelector("#admin-order-search").value;
+    reportState.start = document.querySelector("#admin-order-start").value;
+    reportState.end = document.querySelector("#admin-order-end").value;
+    reportState.status = document.querySelector("#admin-order-status").value;
+    reportState.sort = document.querySelector("#admin-order-sort").value;
+    reportState.page = page;
+  };
 
   const filterRows = () => {
     const search = document.querySelector("#admin-order-search").value.trim().toLowerCase();
@@ -282,24 +298,25 @@ async function renderAdminOrders() {
   };
 
   const draw = () => {
-    const rows = filterRows(); const totalPages = Math.max(1, Math.ceil(rows.length / pageSize)); page = Math.min(page, totalPages);
+    const rows = filterRows(); const totalPages = Math.max(1, Math.ceil(rows.length / pageSize)); page = Math.min(page, totalPages); reportState.page = page;
     const visible = rows.slice((page - 1) * pageSize, page * pageSize);
     document.querySelector("#admin-report-summary").innerHTML = `<article><span>ทั้งหมด</span><b>${rows.length.toLocaleString("th-TH")} Part</b></article><article><span>ต้องการ</span><b>${rows.reduce((sum, row) => sum + Number(row.requested_quantity), 0).toLocaleString("th-TH")} เครื่อง</b></article><article><span>จัดสรรแล้ว</span><b>${rows.reduce((sum, row) => sum + Number(row.allocated_quantity), 0).toLocaleString("th-TH")} เครื่อง</b></article>`;
     document.querySelector("#admin-report-body").innerHTML = visible.length ? visible.map((row) => `<tr><td class="sticky-date"><time datetime="${escapeHtml(row.created_at)}">${fmtDate(row.created_at)}</time></td><td><b class="request-id">${escapeHtml(row.request_id)}</b></td><td><b>${escapeHtml(row.branch_name)}</b><small>JIB${escapeHtml(row.branch_id)}</small></td><td>${escapeHtml(row.customer_name)}</td><td class="product-cell" title="${escapeHtml(row.part_name_snapshot)}"><b>${escapeHtml(row.part_name_snapshot)}</b><small>${escapeHtml(row.part_id)}</small></td><td class="number-column"><b>${Number(row.requested_quantity).toLocaleString("th-TH")}</b></td><td class="number-column"><b>${Number(row.allocated_quantity).toLocaleString("th-TH")}</b></td><td>${badge(row.status)}</td><td><button class="btn btn-outline btn-small" data-allocate="${escapeHtml(row.request_id)}">เปิดคำขอ</button></td></tr>`).join("") : `<tr><td colspan="9" class="empty">ไม่พบรายการความต้องการตามตัวกรอง</td></tr>`;
     const first = rows.length ? (page - 1) * pageSize + 1 : 0; const last = Math.min(page * pageSize, rows.length);
     document.querySelector("#admin-report-pagination").innerHTML = `<span>แสดง ${first.toLocaleString("th-TH")}–${last.toLocaleString("th-TH")} จาก ${rows.length.toLocaleString("th-TH")} Part</span><div><button class="btn btn-outline btn-small" id="report-prev" ${page === 1 ? "disabled" : ""} aria-label="หน้าก่อนหน้า">‹</button><b>${page.toLocaleString("th-TH")} / ${totalPages.toLocaleString("th-TH")}</b><button class="btn btn-outline btn-small" id="report-next" ${page === totalPages ? "disabled" : ""} aria-label="หน้าถัดไป">›</button></div>`;
-    document.querySelectorAll("[data-allocate]").forEach((button) => button.onclick = () => allocationDialog(button.dataset.allocate));
-    document.querySelector("#report-prev").onclick = () => { page -= 1; draw(); };
-    document.querySelector("#report-next").onclick = () => { page += 1; draw(); };
+    document.querySelectorAll("[data-allocate]").forEach((button) => button.onclick = () => { rememberView(); reportState.scrollY = window.scrollY; allocationDialog(button.dataset.allocate); });
+    document.querySelector("#report-prev").onclick = () => { page -= 1; reportState.page = page; draw(); };
+    document.querySelector("#report-next").onclick = () => { page += 1; reportState.page = page; draw(); };
     const descending = document.querySelector("#admin-order-sort").value === "desc"; document.querySelector("#sort-request-date span").textContent = descending ? "↓" : "↑";
     document.querySelector("#sort-request-date").closest("th").setAttribute("aria-sort", descending ? "descending" : "ascending");
     document.querySelector("#export-orders").disabled = rows.length === 0;
   };
 
-  ["#admin-order-search", "#admin-order-start", "#admin-order-end", "#admin-order-status", "#admin-order-sort"].forEach((selector) => document.querySelector(selector).addEventListener(selector === "#admin-order-search" ? "input" : "change", () => { page = 1; draw(); }));
-  document.querySelector("#sort-request-date").onclick = () => { const input = document.querySelector("#admin-order-sort"); input.value = input.value === "desc" ? "asc" : "desc"; page = 1; draw(); };
+  ["#admin-order-search", "#admin-order-start", "#admin-order-end", "#admin-order-status", "#admin-order-sort"].forEach((selector) => document.querySelector(selector).addEventListener(selector === "#admin-order-search" ? "input" : "change", () => { page = 1; rememberView(); draw(); }));
+  document.querySelector("#sort-request-date").onclick = () => { const input = document.querySelector("#admin-order-sort"); input.value = input.value === "desc" ? "asc" : "desc"; page = 1; rememberView(); draw(); };
   document.querySelector("#export-orders").onclick = async () => exportAdminOrders(filterRows());
   draw();
+  requestAnimationFrame(() => window.scrollTo(0, Number(reportState.scrollY) || 0));
 }
 
 async function exportAdminOrders(filteredRows) {
