@@ -356,3 +356,6 @@ async function boot() {
   try { const { user } = await api("/api/me"); state.user = user; state.page = user.role === "ADMIN" ? "dashboard" : "catalog"; state.locationAttempted = false; await renderApp(); } catch (error) { if (error.message.includes("เข้าสู่ระบบ") || error.message.includes("เซสชัน")) return renderLogin(); app.innerHTML = authShell(`<section class="card"><h1>ไม่สามารถเริ่มระบบได้</h1>${flash(error.message, true)}</section>`); } }
 
 boot();
+
+// Build 2026-09-22: preserve allocation report filters, paging, and oldest-first sorting.
+
