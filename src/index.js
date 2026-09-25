@@ -543,11 +543,12 @@ async function allocateOrder(request, env, user, orderId) {
   requireAdmin(user);
   const body = await bodyJson(request);
   if (!Array.isArray(body.items) || body.items.length === 0) throw new AppError(400, "ต้องระบุจำนวนจัดสรร");
-  const order = await env.DB.prepare("SELECT id, status FROM demand_requests WHERE id = ?").bind(orderId).first();
+  const order = await env.DB.prepare("SELECT id, status, sent_at, sent_by FROM demand_requests WHERE id = ?").bind(orderId).first();
   if (!order) throw new AppError(404, "ไม่พบรายการความต้องการ");
-  if (["SENT", "CANCELLED"].includes(order.status)) throw new AppError(409, "รายการนี้ปิดดำเนินการแล้ว");
-  const source = await env.DB.prepare("SELECT id, requested_quantity FROM demand_items WHERE request_id = ?").bind(orderId).all();
+  if (order.status === "CANCELLED") throw new AppError(409, "รายการนี้ยกเลิกแล้ว");
+  const source = await env.DB.prepare("SELECT id, requested_quantity, allocated_quantity FROM demand_items WHERE request_id = ?").bind(orderId).all();
   const allowed = new Map(source.results.map((row) => [row.id, row.requested_quantity]));
+  const previousAllocatedTotal = source.results.reduce((total, row) => total + Number(row.allocated_quantity), 0);
   const received = new Set(); const statements = []; let requestedTotal = 0; let allocatedTotal = 0;
   for (const item of body.items) {
     const quantity = Number(item.allocatedQuantity);
@@ -558,9 +559,9 @@ async function allocateOrder(request, env, user, orderId) {
   }
   if (body.items.length !== allowed.size) throw new AppError(400, "รายการจัดสรรไม่ครบถ้วน");
   const status = allocatedTotal === 0 ? "PENDING" : allocatedTotal < requestedTotal ? "PARTIAL" : "ALLOCATED";
-  statements.push(env.DB.prepare("UPDATE demand_requests SET status = ?, admin_note = ?, allocated_at = CASE WHEN ? = 'PENDING' THEN NULL ELSE CURRENT_TIMESTAMP END, allocated_by = CASE WHEN ? = 'PENDING' THEN NULL ELSE ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, cleanText(body.adminNote, 500) || null, status, status, user.id, orderId));
+  statements.push(env.DB.prepare("UPDATE demand_requests SET status = ?, admin_note = ?, allocated_at = CASE WHEN ? = 'PENDING' THEN NULL ELSE CURRENT_TIMESTAMP END, allocated_by = CASE WHEN ? = 'PENDING' THEN NULL ELSE ? END, sent_at = NULL, sent_by = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, cleanText(body.adminNote, 500) || null, status, status, user.id, orderId));
   await env.DB.batch(statements);
-  await audit(env, user, "ALLOCATE", "DEMAND", orderId, { status, requestedTotal, allocatedTotal });
+  await audit(env, user, order.status === "SENT" ? "REVISE_ALLOCATION" : "ALLOCATE", "DEMAND", orderId, { previousStatus: order.status, status, requestedTotal, previousAllocatedTotal, allocatedTotal, previousSentAt: order.sent_at, previousSentBy: order.sent_by });
   return json({ ok: true, status });
 }
 
