@@ -226,7 +226,7 @@ function renderImportPreview(rows) {
 }
 
 function catalogDisplayName(item) { return String(item.name || "").replace(/^[A-Z0-9]+-Apple\s+/i, "").replace(/\s+1-Y$/i, "").trim(); }
-function catalogGroup(item) { const name = catalogDisplayName(item); if (/iPhone\s+18\s+Pro\s+Max/i.test(name)) return "iPhone 18 Pro Max"; if (/iPhone\s+18\s+Pro/i.test(name)) return "iPhone 18 Pro"; return "สินค้าอื่น ๆ"; }
+function catalogGroup(item) { const name = catalogDisplayName(item); if (/iPhone\s+18\s+Pro\s+Max/i.test(name)) return "iPhone 18 Pro Max"; if (/iPhone\s+18\s+Pro/i.test(name)) return "iPhone 18 Pro"; if (/iPhone\s+Duo/i.test(name)) return "iPhone Duo"; return "สินค้าอื่น ๆ"; }
 function catalogStorage(item) { return catalogDisplayName(item).match(/\b(\d+)\s*(GB|TB)\b/i)?.[0].replace(/\s+/g, "") || ""; }
 function catalogStorageOrder(item) { const match = catalogStorage(item).match(/(\d+)(GB|TB)/i); if (!match) return Number.MAX_SAFE_INTEGER; return Number(match[1]) * (match[2].toUpperCase() === "TB" ? 1024 : 1); }
 
