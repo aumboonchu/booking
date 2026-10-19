@@ -179,9 +179,9 @@ function branchDialog(branch) {
 
 async function renderParts() {
   const { parts } = await api("/api/parts"); state.parts = parts;
-  app.innerHTML = shell(`<section class="page-header"><div><h1>จัดการ Part สินค้า</h1><p>เพิ่ม แก้ไข ปิดชั่วคราว หรือเลิกใช้งานสินค้า</p></div><button class="btn btn-primary" id="add-part">+ เพิ่ม Part</button></section><section class="toolbar"><label class="field">ค้นหา<input id="part-search" placeholder="รหัส Part หรือชื่อสินค้า" /></label><label class="field compact">สถานะ<select id="part-status"><option value="">ทั้งหมด</option><option value="OPEN">เปิดรับแจ้งความต้องการ</option><option value="PAUSED">ปิดชั่วคราว</option><option value="INACTIVE">เลิกใช้งาน</option></select></label><button class="btn btn-outline" data-page="import">นำเข้า Excel</button></section><section class="table-wrap"><table class="table"><thead><tr><th>สินค้า / Part</th><th>ราคาขาย</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="parts-body"></tbody></table></section>`);
+  app.innerHTML = shell(`<section class="page-header"><div><h1>จัดการ Part สินค้า</h1><p>เพิ่ม แก้ไข ปิดชั่วคราว หรือเลิกใช้งานสินค้า</p></div><button class="btn btn-primary" id="add-part">+ เพิ่ม Part</button></section><section class="toolbar"><label class="field">ค้นหา<input id="part-search" placeholder="รหัส Part หรือชื่อสินค้า" /></label><label class="field compact">สถานะ<select id="part-status"><option value="">ทั้งหมด</option><option value="OPEN">เปิดรับแจ้งความต้องการ</option><option value="PAUSED">ปิดชั่วคราว</option><option value="INACTIVE">เลิกใช้งาน</option></select></label><button class="btn btn-outline" data-page="import">นำเข้า Excel</button><button class="btn btn-outline" type="button" data-download-part-template>ดาวน์โหลด Template</button></section><section class="table-wrap"><table class="table"><thead><tr><th>สินค้า / Part</th><th>ราคาขาย</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="parts-body"></tbody></table></section>`);
   const draw = () => { const search = document.querySelector("#part-search").value.toLowerCase(); const status = document.querySelector("#part-status").value; const rows = state.parts.filter((part) => (!status || part.status === status) && `${part.id} ${part.name}`.toLowerCase().includes(search)); document.querySelector("#parts-body").innerHTML = rows.length ? rows.map((part) => `<tr><td><b>${escapeHtml(part.name)}</b><span class="part">${escapeHtml(part.id)}</span></td><td>${money.format(part.sell_price)}</td><td>${badge(part.status)}</td><td><button class="btn btn-outline btn-small" data-edit-part="${escapeHtml(part.id)}">แก้ไข</button></td></tr>`).join("") : `<tr><td colspan="4" class="empty">ไม่พบ Part</td></tr>`; document.querySelectorAll("[data-edit-part]").forEach((button) => button.addEventListener("click", () => partDialog(state.parts.find((part) => part.id === button.dataset.editPart)))); };
-  draw(); document.querySelector("#part-search").addEventListener("input", draw); document.querySelector("#part-status").addEventListener("change", draw); document.querySelector("#add-part").addEventListener("click", () => partDialog());
+  draw(); document.querySelector("#part-search").addEventListener("input", draw); document.querySelector("#part-status").addEventListener("change", draw); document.querySelector("#add-part").addEventListener("click", () => partDialog()); document.querySelector("[data-download-part-template]").addEventListener("click", downloadPartImportTemplate);
 }
 
 function partDialog(part) {
@@ -192,8 +192,30 @@ function partDialog(part) {
   modal.querySelector("#remove-part")?.addEventListener("click", async () => { if (!confirm("ยืนยันการเลิกใช้งานหรือลบ Part นี้?")) return; try { const result = await api(`/api/parts/${encodeURIComponent(part.id)}`, { method: "DELETE" }); modal.remove(); await renderParts(); showMessage(result.inactivated ? "Part มีประวัติความต้องการสินค้า จึงเปลี่ยนเป็นเลิกใช้งานแล้ว" : "ลบ Part แล้ว"); } catch (error) { showMessage(error.message, true); } });
 }
 
+function downloadPartImportTemplate() {
+  if (!window.XLSX) return showMessage("กำลังโหลดตัวสร้าง Excel กรุณาลองอีกครั้ง", true);
+  try {
+    const workbook = XLSX.utils.book_new();
+    const parts = XLSX.utils.aoa_to_sheet([["Product", "Product Name", "Sell Price"]]);
+    parts["!cols"] = [{ wch: 22 }, { wch: 48 }, { wch: 18 }];
+    parts["!autofilter"] = { ref: "A1:C1" };
+    XLSX.utils.book_append_sheet(workbook, parts, "Parts");
+    const guide = XLSX.utils.aoa_to_sheet([
+      ["วิธีกรอก", "รายละเอียด", "ตัวอย่าง"],
+      ["Product", "รหัส Part ห้ามซ้ำกันในไฟล์", "IP704"],
+      ["Product Name", "ชื่อสินค้า", "iPhone 18 Pro 256GB Black"],
+      ["Sell Price", "ราคาขายเป็นจำนวนเต็มบาท ไม่ใส่สัญลักษณ์สกุลเงิน", 48900],
+      ["การนำเข้า", "กรอกข้อมูลในชีต Parts ตั้งแต่แถว 2 แล้วอัปโหลดไฟล์นี้ ระบบรับได้ครั้งละไม่เกิน 2,000 รายการ", ""],
+    ]);
+    guide["!cols"] = [{ wch: 22 }, { wch: 85 }, { wch: 32 }];
+    XLSX.utils.book_append_sheet(workbook, guide, "วิธีกรอก");
+    XLSX.writeFile(workbook, "JIB-Part-Import-Template.xlsx", { compression: true });
+  } catch { showMessage("ไม่สามารถสร้างไฟล์ Template ได้ กรุณาลองอีกครั้ง", true); }
+}
+
 async function renderImport() {
-  app.innerHTML = shell(`<section class="page-header"><div><h1>นำเข้าสินค้าจาก Excel</h1><p>รองรับคอลัมน์ Product, Product Name และ Sell Price</p></div></section><section class="panel"><h2>เลือกไฟล์ pre order.xlsx</h2><p class="muted">ระบบตรวจรหัส Part ซ้ำ ข้อมูลว่าง และราคาที่ไม่ถูกต้องก่อนบันทึก</p><input id="xlsx-file" type="file" accept=".xlsx,.xls" /><div id="import-preview" class="empty">ยังไม่ได้เลือกไฟล์</div></section>`);
+  app.innerHTML = shell(`<section class="page-header"><div><h1>นำเข้าสินค้าจาก Excel</h1><p>รองรับคอลัมน์ Product, Product Name และ Sell Price</p></div><button class="btn btn-outline" type="button" data-download-part-template>ดาวน์โหลด Template</button></section><section class="panel"><h2>เลือกไฟล์ Excel</h2><p class="muted">ระบบตรวจรหัส Part ซ้ำ ข้อมูลว่าง และราคาที่ไม่ถูกต้องก่อนบันทึก</p><input id="xlsx-file" type="file" accept=".xlsx,.xls" /><div id="import-preview" class="empty">ยังไม่ได้เลือกไฟล์</div></section>`);
+  document.querySelector("[data-download-part-template]").addEventListener("click", downloadPartImportTemplate);
   document.querySelector("#xlsx-file").addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; if (!window.XLSX) return showMessage("กำลังโหลดตัวอ่าน Excel กรุณาลองอีกครั้ง", true); try { const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" }); const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" }); renderImportPreview(rows); } catch { showMessage("ไม่สามารถอ่านไฟล์ Excel ได้", true); } });
 }
 
