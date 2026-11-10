@@ -1,5 +1,5 @@
 const app = document.querySelector("#app");
-const state = { user: null, page: null, cart: new Map(), catalog: [], parts: [], orders: [], locationAttempted: false, adminReport: { search: "", start: "", end: "", status: "", sort: "asc", page: 1, scrollY: 0 } };
+const state = { user: null, page: null, cart: new Map(), catalog: [], parts: [], orders: [], locationAttempted: false, adminReport: { search: "", branch: "", start: "", end: "", status: "", sort: "asc", page: 1, scrollY: 0 } };
 
 const money = new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 });
 const date = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" });
@@ -286,9 +286,10 @@ async function renderAdminOrders() {
   const { rows: reportRows } = await api("/api/admin/orders/export");
   const reportState = state.adminReport;
   let page = Math.max(1, Number(reportState.page) || 1); const pageSize = 20;
-  app.innerHTML = shell(`<section class="page-header report-header"><div><h1>รายงานความต้องการและการจัดสรร</h1><p>แสดง 1 Part ต่อ 1 บรรทัด เรียงตามวันเวลาที่แจ้ง และส่งออกข้อมูล</p></div><button class="btn btn-excel" id="export-orders"><span aria-hidden="true">▦</span> Export Excel</button></section><section class="toolbar report-toolbar"><label class="field report-search">ค้นหา<input id="admin-order-search" placeholder="ลูกค้า สาขา รุ่น Part หรือเลขที่รายการ" /></label><label class="field">วันที่เริ่มต้น<input id="admin-order-start" type="date" /></label><label class="field">วันที่สิ้นสุด<input id="admin-order-end" type="date" /></label><label class="field compact">สถานะ<select id="admin-order-status"><option value="">ทั้งหมด</option><option value="PENDING">รอจัดสรร</option><option value="PARTIAL">จัดสรรบางส่วน</option><option value="ALLOCATED">จัดสรรครบ</option><option value="SENT">ส่งสินค้าแล้ว</option><option value="CANCELLED">ยกเลิก</option></select></label><label class="field compact">เรียงตาม<select id="admin-order-sort"><option value="asc">เก่าสุดก่อน</option><option value="desc">ใหม่สุดก่อน</option></select></label></section><section class="report-summary" id="admin-report-summary"></section><section class="table-wrap report-table-wrap"><table class="table report-table"><thead><tr><th class="sticky-date"><button class="sort-heading" id="sort-request-date" type="button">วัน–เวลาที่แจ้ง <span aria-hidden="true">↑</span></button></th><th>เลขที่คำขอ</th><th>สาขา</th><th>ลูกค้า</th><th>สินค้า / Part</th><th class="number-column">ต้องการ</th><th class="number-column">จัดสรร</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="admin-report-body"></tbody></table><footer class="report-pagination" id="admin-report-pagination"></footer></section>`);
+  app.innerHTML = shell(`<section class="page-header report-header"><div><h1>รายงานความต้องการและการจัดสรร</h1><p>แสดง 1 Part ต่อ 1 บรรทัด เรียงตามวันเวลาที่แจ้ง และส่งออกข้อมูล</p></div><button class="btn btn-excel" id="export-orders"><span aria-hidden="true">▦</span> Export Excel</button></section><section class="toolbar report-toolbar"><label class="field">ค้นหา<input id="admin-order-search" placeholder="ลูกค้า สาขา รุ่น Part หรือเลขที่รายการ" /></label><label class="field">ค้นหาสาขา<input id="admin-order-branch" type="search" placeholder="ชื่อสาขา หรือ JIB280" /></label><label class="field">วันที่เริ่มต้น<input id="admin-order-start" type="date" /></label><label class="field">วันที่สิ้นสุด<input id="admin-order-end" type="date" /></label><label class="field compact">สถานะ<select id="admin-order-status"><option value="">ทั้งหมด</option><option value="PENDING">รอจัดสรร</option><option value="PARTIAL">จัดสรรบางส่วน</option><option value="ALLOCATED">จัดสรรครบ</option><option value="SENT">ส่งสินค้าแล้ว</option><option value="CANCELLED">ยกเลิก</option></select></label><label class="field compact">เรียงตาม<select id="admin-order-sort"><option value="asc">เก่าสุดก่อน</option><option value="desc">ใหม่สุดก่อน</option></select></label></section><section class="report-summary" id="admin-report-summary"></section><section class="table-wrap report-table-wrap"><table class="table report-table"><thead><tr><th class="sticky-date"><button class="sort-heading" id="sort-request-date" type="button">วัน–เวลาที่แจ้ง <span aria-hidden="true">↑</span></button></th><th>เลขที่คำขอ</th><th>สาขา</th><th>ลูกค้า</th><th>สินค้า / Part</th><th class="number-column">ต้องการ</th><th class="number-column">จัดสรร</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody id="admin-report-body"></tbody></table><footer class="report-pagination" id="admin-report-pagination"></footer></section>`);
 
   document.querySelector("#admin-order-search").value = reportState.search;
+  document.querySelector("#admin-order-branch").value = reportState.branch;
   document.querySelector("#admin-order-start").value = reportState.start;
   document.querySelector("#admin-order-end").value = reportState.end;
   document.querySelector("#admin-order-status").value = reportState.status;
@@ -296,6 +297,7 @@ async function renderAdminOrders() {
 
   const rememberView = () => {
     reportState.search = document.querySelector("#admin-order-search").value;
+    reportState.branch = document.querySelector("#admin-order-branch").value;
     reportState.start = document.querySelector("#admin-order-start").value;
     reportState.end = document.querySelector("#admin-order-end").value;
     reportState.status = document.querySelector("#admin-order-status").value;
@@ -305,13 +307,16 @@ async function renderAdminOrders() {
 
   const filterRows = () => {
     const search = document.querySelector("#admin-order-search").value.trim().toLowerCase();
+    const branch = document.querySelector("#admin-order-branch").value.trim().toLowerCase();
+    const branchId = /^(?:jib\s*)?(\d+)$/.exec(branch)?.[1];
     const status = document.querySelector("#admin-order-status").value;
     const start = document.querySelector("#admin-order-start").value;
     const end = document.querySelector("#admin-order-end").value;
     const direction = document.querySelector("#admin-order-sort").value;
     return reportRows.filter((row) => {
       const requestDate = bangkokDateKey(row.created_at);
-      return (!status || row.status === status) && (!start || requestDate >= start) && (!end || requestDate <= end)
+      const matchesBranch = !branch || (branchId ? String(row.branch_id) === branchId : String(row.branch_name ?? "").toLowerCase().includes(branch));
+      return matchesBranch && (!status || row.status === status) && (!start || requestDate >= start) && (!end || requestDate <= end)
         && (!search || `${row.request_id} ${row.customer_name} ${row.branch_id} ${row.branch_name} ${row.part_id} ${row.part_name_snapshot}`.toLowerCase().includes(search));
     }).sort((left, right) => {
       const byDate = (timestamp(left.created_at).getTime() - timestamp(right.created_at).getTime()) * (direction === "asc" ? 1 : -1);
@@ -338,7 +343,7 @@ async function renderAdminOrders() {
     document.querySelector("#export-orders").disabled = rows.length === 0;
   };
 
-  ["#admin-order-search", "#admin-order-start", "#admin-order-end", "#admin-order-status", "#admin-order-sort"].forEach((selector) => document.querySelector(selector).addEventListener(selector === "#admin-order-search" ? "input" : "change", () => { page = 1; rememberView(); draw(); }));
+  ["#admin-order-search", "#admin-order-branch", "#admin-order-start", "#admin-order-end", "#admin-order-status", "#admin-order-sort"].forEach((selector) => document.querySelector(selector).addEventListener(["#admin-order-search", "#admin-order-branch"].includes(selector) ? "input" : "change", () => { page = 1; rememberView(); draw(); }));
   document.querySelector("#sort-request-date").onclick = () => { const input = document.querySelector("#admin-order-sort"); input.value = input.value === "desc" ? "asc" : "desc"; page = 1; rememberView(); draw(); };
   document.querySelector("#export-orders").onclick = async () => exportAdminOrders(filterRows());
   draw();
