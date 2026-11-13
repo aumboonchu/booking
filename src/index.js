@@ -513,7 +513,26 @@ async function listAdminExportRows(env, user) {
     JOIN demand_items di ON di.request_id = d.id
     LEFT JOIN users au ON au.id = d.allocated_by LEFT JOIN users su ON su.id = d.sent_by
     ORDER BY d.created_at DESC, d.id, di.part_name_snapshot`).all();
-  return json({ rows: results });
+  const inventory = await env.DB.prepare("SELECT payload, uploaded_at FROM inventory_snapshot WHERE id = 1").first();
+  const stock = new Map();
+  const stockKey = (branch, part) => {
+    const code = String(branch).trim().toUpperCase();
+    const branchId = /^(?:JIB\s*)?(\d+)$/.exec(code)?.[1];
+    return JSON.stringify([branchId?.replace(/^0+(?=\d)/, "") ?? code, String(part).trim().toUpperCase()]);
+  };
+  if (inventory) {
+    const { headers, rows } = JSON.parse(inventory.payload);
+    const columns = headers.map(header => header.trim().toLowerCase());
+    const [branch, product, number] = ["branch", "product", "number"].map(column => columns.indexOf(column));
+    for (const row of rows) {
+      const key = stockKey(row[branch], row[product]);
+      stock.set(key, (stock.get(key) ?? 0) + row[number]);
+    }
+  }
+  return json({
+    rows: results.map(row => ({ ...row, stock_quantity: stock.get(stockKey(row.branch_id, row.part_id)) ?? null })),
+    inventoryUploadedAt: inventory?.uploaded_at ?? null,
+  }, 200, { "cache-control": "no-store" });
 }
 
 async function getAdminOrder(env, user, orderId) {

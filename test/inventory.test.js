@@ -23,7 +23,7 @@ test("the workbook summary sums Number and line totals, preserves serials, and g
   assert.deepEqual(summary.branches.map(b => [b.branch, b.units]), [["21", 3], ["112", 3]]);
 });
 
-function database(role = "ADMIN") {
+function database(role = "ADMIN", reportRows = []) {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync(new URL("../migrations/0009_inventory_snapshot.sql", import.meta.url), "utf8"));
   return { prepare(sql) {
@@ -37,6 +37,10 @@ function database(role = "ADMIN") {
       },
       async run() {
         if (!sql.includes("UPDATE sessions SET last_seen_at")) sqlite.prepare(sql).run(...args);
+      },
+      async all() {
+        if (sql.includes("FROM demand_requests d JOIN branches")) return { results: reportRows };
+        return { results: sqlite.prepare(sql).all(...args) };
       },
     };
   }};
@@ -64,4 +68,34 @@ test("branch accounts cannot read or replace shared inventory", async () => {
   const DB = database("BRANCH");
   assert.equal((await request("GET", DB)).status, 403);
   assert.equal((await request("PUT", DB, { filename: "x.xlsx", sheet: "Inventory", headers, rows })).status, 403);
+});
+
+test("the allocation report sums stock only for the same branch and Part in the latest upload", async () => {
+  const DB = database("ADMIN", [
+    { branch_id: 21, part_id: "A-1" }, { branch_id: 112, part_id: "A-1" },
+    { branch_id: 21, part_id: "B-2" }, { branch_id: 112, part_id: "B-2" },
+  ]);
+  const report = async () => {
+    const response = await worker.fetch(new Request("https://example.test/api/admin/orders/export", {
+      headers: { cookie: "jib_session=test-token" },
+    }), { DB });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const empty = await report();
+  assert.equal(empty.inventoryUploadedAt, null);
+  assert.deepEqual(empty.rows.map(row => row.stock_quantity), [null, null, null, null]);
+
+  const upload = { filename: "stock.xlsx", sheet: "Inventory", headers, rows: [
+    rows[0], rows[1], [" JIB021 ", " a-1 ", "Product A", "000022", 4, 40, 42.8, "Phone"],
+    [21, "B-2", "Product B", "", 0, 0, 0, "Watch"],
+  ] };
+  const saved = await request("PUT", DB, upload);
+  assert.equal(saved.status, 200);
+  const loaded = await report();
+  assert.equal(loaded.inventoryUploadedAt, (await saved.json()).uploadedAt);
+  assert.deepEqual(loaded.rows.map(row => row.stock_quantity), [6, 3, 0, null]);
+
+  assert.equal((await request("PUT", DB, { ...upload, rows: [rows[1]] })).status, 200);
+  assert.deepEqual((await report()).rows.map(row => row.stock_quantity), [null, 3, null, null]);
 });
