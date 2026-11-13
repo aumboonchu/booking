@@ -68,6 +68,7 @@ async function route(request, env, url) {
   if (partMatch && request.method === "DELETE") return removePart(env, user, decodeURIComponent(partMatch[1]));
 
   if (pathname === "/api/admin/summary" && request.method === "GET") return summary(env, user);
+  if (pathname === "/api/admin/inventory" && ["GET", "PUT"].includes(request.method)) return inventorySnapshot(request, env, user);
   if (pathname === "/api/admin/orders" && request.method === "GET") return listAdminOrders(env, user);
   if (pathname === "/api/admin/orders/export" && request.method === "GET") return listAdminExportRows(env, user);
   const adminOrderMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)$/);
@@ -614,6 +615,65 @@ async function createLoginResponse(request, env, user) {
 
 async function audit(env, user, action, entityType, entityId, detail) {
   await env.DB.prepare("INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, detail) VALUES (?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), user?.id || null, action, entityType, entityId, detail ? JSON.stringify(detail) : null).run();
+}
+
+async function inventorySnapshot(request, env, user) {
+  requireAdmin(user);
+  const headers = { "cache-control": "no-store" };
+  if (request.method === "GET") {
+    const current = await env.DB.prepare("SELECT filename, sheet, payload, uploaded_at, uploaded_by FROM inventory_snapshot WHERE id = 1").first();
+    return json({ snapshot: current ? { ...JSON.parse(current.payload), filename: current.filename, sheet: current.sheet, uploadedAt: current.uploaded_at, uploadedBy: current.uploaded_by } : null }, 200, headers);
+  }
+
+  const limit = 1_500_000;
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json") || !request.body) {
+    throw new AppError(400, "รูปแบบข้อมูล Inventory ไม่ถูกต้อง");
+  }
+  if (Number(request.headers.get("content-length")) > limit) throw new AppError(413, "ข้อมูล Inventory มีขนาดใหญ่เกินไป");
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let size = 0; let input = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        throw new AppError(413, "ข้อมูล Inventory มีขนาดใหญ่เกินไป");
+      }
+      input += decoder.decode(value, { stream: true });
+    }
+    input += decoder.decode();
+  } finally { reader.releaseLock(); }
+  let data;
+  try { data = JSON.parse(input); } catch { throw new AppError(400, "รูปแบบข้อมูล Inventory ไม่ถูกต้อง"); }
+  const filename = cleanText(data?.filename, 240);
+  const sheet = cleanText(data?.sheet, 64);
+  const columns = data?.headers;
+  const rows = data?.rows;
+  const validCell = (cell) => typeof cell === "string" ? cell.length <= 1000 : typeof cell === "number" && Number.isFinite(cell);
+  if (!/\.xlsx$/i.test(filename) || !sheet || !Array.isArray(columns) || columns.length < 6 || columns.length > 60 ||
+      columns.some((column) => typeof column !== "string" || !column.trim() || column.length > 120) ||
+      !Array.isArray(rows) || !rows.length || rows.length > 10000) {
+    throw new AppError(400, "ไม่พบข้อมูล Inventory ที่ถูกต้อง");
+  }
+  const keys = columns.map(column => column.trim().toLowerCase());
+  const [branch, product, name, quantity, beforeVat, afterVat] = ["branch", "product", "name", "number", "ราคารวมก่อน vat", "ราคารวมหลัง vat"].map(key => keys.indexOf(key));
+  if (new Set(keys).size !== keys.length || [branch, product, name, quantity, beforeVat, afterVat].includes(-1)) {
+    throw new AppError(400, "หัวคอลัมน์ไม่ตรงกับไฟล์ Inventory");
+  }
+  if (rows.some(row => !Array.isArray(row) || row.length !== columns.length || !row.every(validCell) ||
+      !String(row[branch]).trim() || !String(row[product]).trim() || !String(row[name]).trim() ||
+      !Number.isSafeInteger(row[quantity]) || !Number.isFinite(row[beforeVat]) || !Number.isFinite(row[afterVat]))) {
+    throw new AppError(400, "ข้อมูลสาขา สินค้า จำนวน หรือราคารวมไม่ถูกต้อง");
+  }
+  const uploadedAt = new Date().toISOString();
+  const uploadedBy = user.display_name || user.username;
+  await env.DB.prepare(
+    "INSERT INTO inventory_snapshot (id, filename, sheet, payload, uploaded_at, uploaded_by) VALUES (1, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET filename = excluded.filename, sheet = excluded.sheet, payload = excluded.payload, uploaded_at = excluded.uploaded_at, uploaded_by = excluded.uploaded_by"
+  ).bind(filename, sheet, JSON.stringify({ headers: columns, rows }), uploadedAt, uploadedBy).run();
+  return json({ uploadedAt, uploadedBy }, 200, headers);
 }
 
 function publicUser(user) { return { id: user.id, username: user.username, displayName: user.display_name, role: user.role, branchId: user.branch_id, branchName: user.branch_name, mustChangePassword: Boolean(user.must_change_password) }; }

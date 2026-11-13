@@ -1,3 +1,5 @@
+import { renderInventory } from "./inventory.js?v=20261113-inventory";
+
 const app = document.querySelector("#app");
 const state = { user: null, page: null, cart: new Map(), catalog: [], parts: [], orders: [], locationAttempted: false, adminReport: { search: "", branch: "", start: "", end: "", status: "", sort: "asc", page: 1, scrollY: 0 } };
 
@@ -61,7 +63,7 @@ function renderLogin() {
 
 function shell(content) {
   const isAdmin = state.user.role === "ADMIN";
-  const nav = isAdmin ? [["dashboard", "ภาพรวม", "figma-home.svg"], ["branches", "ข้อมูลสาขา", "figma-nav-grid.svg"], ["parts", "จัดการ Part", "figma-nav-layers.svg"], ["admin-orders", "ความต้องการและจัดสรร", "figma-nav-trending.svg"]] : [["catalog", "แจ้งความต้องการ", ""], ["orders", "รายการของฉัน", ""]];
+  const nav = isAdmin ? [["dashboard", "ภาพรวม", "figma-home.svg"], ["branches", "ข้อมูลสาขา", "figma-nav-grid.svg"], ["parts", "จัดการ Part", "figma-nav-layers.svg"], ["admin-orders", "ความต้องการและจัดสรร", "figma-nav-trending.svg"], ["inventory", "อัปโหลด Inventory", "inventory-upload.svg"]] : [["catalog", "แจ้งความต้องการ", ""], ["orders", "รายการของฉัน", ""]];
   return `<div class="shell"><aside class="sidebar"><div class="brand">JIB<small>DEMAND PORTAL</small></div><nav class="nav">${nav.map(([id, label, icon]) => `<button class="${state.page === id ? "active" : ""}" data-page="${id}">${icon ? `<img src="/assets/${icon}" alt="" />` : ""}<span>${label}</span></button>`).join("")}</nav><div class="sidebar-foot">${isAdmin ? "ผู้ดูแลระบบส่วนกลาง" : `สาขา ${state.user.branchId}<br>${escapeHtml(state.user.branchName)}`}</div></aside><main class="main ${isAdmin && state.page === "admin-orders" ? "report-main" : ""}"><div class="topbar"><span class="context">${isAdmin ? "WORKSPACE / ส่วนกลาง" : `สาขา ${state.user.branchId} / ${escapeHtml(state.user.branchName)}`}</span><button class="btn btn-outline btn-small" id="logout">ออกจากระบบ</button></div><div data-flash></div>${content}</main></div>`;
 }
 
@@ -69,6 +71,7 @@ async function renderApp() {
   if (!state.user) return boot();
   if (state.user.mustChangePassword) return renderChangePassword();
   const pages = { dashboard: renderDashboard, branches: renderBranches, "branch-import": renderBranchImport, parts: renderParts, "admin-orders": renderAdminOrders, import: renderImport, catalog: renderCatalog, orders: renderOrders };
+  if (state.user.role === "ADMIN") pages.inventory = () => renderInventory({ app, shell, api, escapeHtml, fmtDate });
   const renderer = pages[state.page] || (state.user.role === "ADMIN" ? renderDashboard : renderCatalog);
   await renderer();
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", async () => { state.page = button.dataset.page; await renderApp(); }));
